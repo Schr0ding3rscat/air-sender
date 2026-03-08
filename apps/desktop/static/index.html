@@ -1,0 +1,222 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Air Sender Receiver</title>
+    <style>
+      :root {
+        --bg:#020617;
+        --panel:#0b1220;
+        --border:#1f2a44;
+        --text:#e2e8f0;
+        --muted:#93a4bf;
+        --brand:#38bdf8;
+        --ok:#34d399;
+        --warn:#f59e0b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin:0;
+        font-family: Inter, system-ui, Arial, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(1200px 700px at 10% -20%, #1e293b 0%, transparent 60%),
+          radial-gradient(1200px 700px at 100% 0%, #0f766e33 0%, transparent 50%),
+          var(--bg);
+      }
+      .app { max-width: 1300px; margin: 0 auto; padding: 24px; }
+      .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+      .title { margin:0; font-size:28px; }
+      .subtitle { color:var(--muted); margin-top:6px; }
+      .btn {
+        border:1px solid var(--border);
+        background:#111a2f;
+        color:var(--text);
+        border-radius:10px;
+        padding:8px 12px;
+        cursor:pointer;
+      }
+      .btn:hover { border-color: var(--brand); }
+      .grid { display:grid; grid-template-columns: repeat(12,1fr); gap:14px; }
+      .card {
+        background: linear-gradient(180deg, #0b1220, #0a1020);
+        border:1px solid var(--border);
+        border-radius:14px;
+        padding:14px;
+        box-shadow: 0 10px 30px #0008;
+      }
+      .kpis { grid-column: span 12; display:grid; grid-template-columns: repeat(6,1fr); gap:10px; }
+      .kpi { background:#0f172a; border:1px solid #22314f; border-radius:12px; padding:10px; }
+      .kpi small { color:var(--muted); display:block; }
+      .kpi strong { font-size:22px; }
+      .panel-sessions { grid-column: span 8; }
+      .panel-controls { grid-column: span 4; }
+      .panel-bottom-left { grid-column: span 6; }
+      .panel-bottom-right { grid-column: span 6; }
+      table { width:100%; border-collapse: collapse; margin-top:8px; }
+      th,td { text-align:left; padding:8px; border-bottom:1px solid #1d2740; font-size:13px; }
+      th { color:var(--muted); font-weight:600; }
+      .badge { padding:3px 8px; border-radius:99px; font-size:11px; border:1px solid #2b395a; }
+      .pending { color:var(--warn); }
+      .active { color:var(--ok); }
+      .stopped { color:#cbd5e1; }
+      input, select {
+        width:100%;
+        margin-top:8px;
+        padding:8px;
+        background:#081022;
+        color:var(--text);
+        border:1px solid #2a3960;
+        border-radius:8px;
+      }
+      .stack > * + * { margin-top:8px; }
+      .log { max-height:260px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+      .status { color:var(--muted); margin-left:10px; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="header">
+        <div>
+          <h1 class="title">Air Sender Receiver</h1>
+          <div class="subtitle">Production-style local control plane for multi-protocol casting and mirroring.</div>
+        </div>
+        <div>
+          <button class="btn" id="refreshAll">Refresh all</button>
+          <span class="status" id="status">Ready</span>
+        </div>
+      </div>
+
+      <section class="grid">
+        <div class="kpis" id="kpis"></div>
+
+        <article class="card panel-sessions">
+          <h3>Sessions</h3>
+          <table>
+            <thead><tr><th>Device</th><th>Platform</th><th>Protocol</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="sessionsBody"></tbody>
+          </table>
+        </article>
+
+        <article class="card panel-controls stack">
+          <h3>Create mock session</h3>
+          <input id="deviceName" placeholder="Device name" value="Demo Android" />
+          <input id="devicePlatform" placeholder="Platform" value="Android" />
+          <select id="protocolKind">
+            <option value="cast">cast</option>
+            <option value="air-play">air-play</option>
+            <option value="miracast">miracast</option>
+          </select>
+          <button class="btn" id="createSession">Create session</button>
+
+          <h3>Policy</h3>
+          <select id="acceptancePolicy">
+            <option value="auto">auto</option>
+            <option value="ask" selected>ask</option>
+            <option value="trusted-only">trusted-only</option>
+          </select>
+          <select id="maxSessions">
+            <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option>
+          </select>
+          <button class="btn" id="savePolicy">Save policy</button>
+        </article>
+
+        <article class="card panel-bottom-left stack">
+          <h3>Trusted devices</h3>
+          <div style="display:flex; gap:8px;">
+            <input id="trustDeviceId" placeholder="device-id" />
+            <button class="btn" id="trustBtn">Trust</button>
+          </div>
+          <table>
+            <thead><tr><th>Device ID</th><th></th></tr></thead>
+            <tbody id="trustBody"></tbody>
+          </table>
+        </article>
+
+        <article class="card panel-bottom-right">
+          <h3>Audit events</h3>
+          <div class="log" id="audit"></div>
+        </article>
+      </section>
+    </div>
+
+    <script type="module">
+      const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
+
+      async function load() {
+        const [dashboard, sessions, policy, trust, audit] = await Promise.all([
+          window.receiverApi.getDashboard(),
+          window.receiverApi.getSessions(),
+          window.receiverApi.getPolicy(),
+          window.receiverApi.getTrustedDevices(),
+          window.receiverApi.getAudit()
+        ]);
+
+        const kpis = [
+          ['Protocols', dashboard.protocol_count],
+          ['Pending', dashboard.pending_sessions],
+          ['Active', dashboard.active_sessions],
+          ['Stopped', dashboard.stopped_sessions],
+          ['Trusted', dashboard.trusted_device_count],
+          ['Recording', dashboard.active_recordings]
+        ];
+        document.getElementById('kpis').innerHTML = kpis.map(([k,v]) => `<div class="kpi"><small>${k}</small><strong>${v}</strong></div>`).join('');
+
+        document.getElementById('acceptancePolicy').value = policy.acceptance;
+        document.getElementById('maxSessions').value = String(policy.max_sessions);
+
+        document.getElementById('sessionsBody').innerHTML = sessions.map((s) => {
+          const cls = s.status === 'active' ? 'active' : s.status === 'pending' ? 'pending' : 'stopped';
+          const recordBtn = s.status === 'active'
+            ? `<button class="btn" onclick="startRec('${s.id}')">Start Rec</button><button class="btn" onclick="stopRec('${s.id}')">Stop Rec</button>`
+            : '';
+          return `<tr>
+            <td>${s.device.name}</td>
+            <td>${s.device.platform}</td>
+            <td>${s.protocol}</td>
+            <td><span class="badge ${cls}">${s.status}</span></td>
+            <td>
+              <button class="btn" onclick="acceptSession('${s.id}')">Accept</button>
+              <button class="btn" onclick="stopSession('${s.id}')">Stop</button>
+              ${recordBtn}
+            </td>
+          </tr>`;
+        }).join('');
+
+        document.getElementById('trustBody').innerHTML = trust.map((id) => `<tr><td>${id}</td><td><button class="btn" onclick="revoke('${id}')">Revoke</button></td></tr>`).join('');
+        document.getElementById('audit').innerHTML = audit.slice().reverse().map((a) => `${a.ts} | ${a.kind} | ${a.message}`).join('<br/>');
+      }
+
+      async function run(action, label) {
+        try {
+          setStatus(label + '...');
+          await action();
+          await load();
+          setStatus(label + ' complete');
+        } catch (e) {
+          setStatus(`Error: ${e.message}`);
+        }
+      }
+
+      window.acceptSession = (id) => run(() => window.receiverApi.acceptSession(id), 'Accept session');
+      window.stopSession = (id) => run(() => window.receiverApi.stopSession(id), 'Stop session');
+      window.startRec = (id) => run(() => window.receiverApi.startRecording({ session_id: id, profile: { destination_path: './recordings', quality_preset: 'balanced', codec: 'h264', container: 'mp4' }}), 'Start recording');
+      window.stopRec = (id) => run(() => window.receiverApi.stopRecording(id), 'Stop recording');
+      window.revoke = (id) => run(() => window.receiverApi.revokeDevice(id), 'Revoke device');
+
+      document.getElementById('refreshAll').addEventListener('click', () => run(() => Promise.resolve(), 'Refresh'));
+      document.getElementById('createSession').addEventListener('click', () => run(() => window.receiverApi.createSession({
+        protocol: document.getElementById('protocolKind').value,
+        device_name: document.getElementById('deviceName').value,
+        device_platform: document.getElementById('devicePlatform').value
+      }), 'Create session'));
+      document.getElementById('savePolicy').addEventListener('click', () => run(() => window.receiverApi.updatePolicy({
+        acceptance: document.getElementById('acceptancePolicy').value,
+        max_sessions: Number(document.getElementById('maxSessions').value)
+      }), 'Update policy'));
+      document.getElementById('trustBtn').addEventListener('click', () => run(() => window.receiverApi.trustDevice(document.getElementById('trustDeviceId').value), 'Trust device'));
+
+      load().catch((e) => setStatus(`Failed to connect: ${e.message}`));
+    </script>
+  </body>
+</html>
