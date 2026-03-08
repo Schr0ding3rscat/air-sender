@@ -38,7 +38,7 @@ ok
 Aggregated KPIs:
 
 - protocol_count
-- pending_sessions
+- pending_sessions (includes queued)
 - active_sessions
 - stopped_sessions
 - trusted_device_count
@@ -47,6 +47,22 @@ Aggregated KPIs:
 ### `GET /v1/protocols`
 
 Returns protocol descriptors and capability flags.
+
+### `PATCH /v1/protocols/{id}` (auth required)
+
+Enables/disables a protocol by ID (`airplay`, `cast`, `miracast`).
+
+**Request**
+
+```json
+{
+  "enabled": false
+}
+```
+
+**Errors**
+
+- `404` protocol not found
 
 ---
 
@@ -66,9 +82,19 @@ Creates a mock/simulated session.
 {
   "protocol": "airplay",
   "device_name": "QA iPhone",
-  "device_platform": "iOS"
+  "device_platform": "iOS",
+  "priority": "teacher",
+  "audio_mode": "audio-only"
 }
 ```
+
+Notes:
+
+- `priority` options: `normal`, `teacher`, `admin-override`.
+- `audio_mode` options: `full`, `audio-only`.
+- `audio-only` is only valid for AirPlay/Cast.
+- If current sessions hit policy limit, new sessions are created as `queued`.
+- Disabled protocols cannot create sessions.
 
 **Response 201**
 
@@ -76,7 +102,7 @@ A `SessionDescriptor` object.
 
 ### `POST /v1/sessions/{id}/accept` (auth required)
 
-Transitions a session to `active`.
+Transitions a session to `active` and may perform policy-based active session handoff when at session limit.
 
 - `404` if session ID does not exist.
 
@@ -157,14 +183,7 @@ Revokes trust.
 
 ### `GET /v1/policy`
 
-Returns:
-
-```json
-{
-  "acceptance": "ask",
-  "max_sessions": 4
-}
-```
+Returns receiver policy with acceptance, queue behavior, audio routing, and display options.
 
 ### `PATCH /v1/policy` (auth required)
 
@@ -175,14 +194,21 @@ Partial update.
 ```json
 {
   "acceptance": "trusted-only",
-  "max_sessions": 2
+  "max_sessions": 2,
+  "queue_policy": "teacher-priority",
+  "audio_output_device": "hdmi-1",
+  "target_display": "display-2",
+  "scaling_mode": "fill",
+  "rotation_degrees": 90,
+  "preserve_aspect_ratio": true
 }
 ```
 
 Validation:
 
 - `max_sessions` must be between 1 and 4.
-- Invalid value returns `400` with error JSON.
+- `rotation_degrees` must be one of `0`, `90`, `180`, `270`.
+- `audio_output_device` cannot be empty.
 
 ---
 
@@ -197,4 +223,4 @@ Returns chronological list of audit events with fields:
 - `kind`
 - `message`
 
-Audit includes both successful operations and denied security attempts.
+Audit includes successful operations (policy, protocol, session, recording, trust) and denied security attempts.
