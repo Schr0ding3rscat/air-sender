@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Air Sender Receiver Config",
+  "type": "object",
+  "required": [
+    "version",
+    "discovery",
+    "policy",
+    "maxSessions",
+    "layout",
+    "recording",
+    "telemetry"
+  ],
+  "properties": {
+    "version": { "const": "1" },
+    "discovery": {
+      "type": "object",
+      "properties": {
+        "airplay": { "type": "boolean" },
+        "cast": { "type": "boolean" },
+        "miracast": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "acceptance": { "enum": ["auto", "ask", "trusted-only"] },
+        "headless": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "maxSessions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "defaultMode": { "enum": ["grid", "focus"] }
+      },
+      "additionalProperties": false
+    },
+    "recording": {
+      "type": "object",
+      "properties": {
+        "defaultPath": { "type": "string" },
+        "codecPreset": { "type": "string" },
+        "containerPreset": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "previewRequired": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

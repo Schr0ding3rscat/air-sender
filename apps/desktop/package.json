@@ -1,0 +1,13 @@
+{
+  "name": "air-sender-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^30.0.0"
+  }
+}
