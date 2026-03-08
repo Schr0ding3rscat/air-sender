@@ -1,6 +1,6 @@
 import { contextBridge } from 'electron';
 
-const apiBase = process.env.AIR_SENDER_API_BASE || 'http://127.0.0.1:9760';
+const apiBase = process.env.AIR_SENDER_API_BASE || process.env.AIR_SENDER_CORE_URL || 'http://127.0.0.1:9760';
 const apiToken = process.env.AIR_SENDER_API_TOKEN || 'dev-token';
 
 const request = async (method, path, body) => {

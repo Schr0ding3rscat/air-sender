@@ -98,7 +98,7 @@ air-sender/
 
 `apps/desktop` reads:
 
-- `AIR_SENDER_CORE_URL` (default: `http://127.0.0.1:9760`)
+- `AIR_SENDER_API_BASE` (primary) or `AIR_SENDER_CORE_URL` (compat fallback), default: `http://127.0.0.1:9760`
 - `AIR_SENDER_API_TOKEN` (used for authenticated mutating calls)
 
 ---
