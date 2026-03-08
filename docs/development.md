@@ -96,6 +96,13 @@ curl -s -X PATCH "$BASE/v1/policy" \
 
 ---
 
+
+Additional validation checks worth testing manually:
+
+- `PATCH /v1/policy` rejects blank `audio_output_device` or `target_display` values (`400`).
+- `POST /v1/sessions/{id}/accept` returns `404` for unknown IDs without modifying active sessions.
+- `POST /v1/sessions/{id}/accept` rejects stopped sessions (`409`).
+
 ## 7) Common pitfalls
 
 - Token mismatch between desktop and core causes `401` on actions.

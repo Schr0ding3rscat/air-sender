@@ -533,13 +533,33 @@ async fn accept_session(
     }
 
     let mut sessions = state.sessions.write().await;
+    let Some(target_session) = sessions.get(&id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "session not found".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    if target_session.status == SessionStatus::Stopped {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "cannot accept a stopped session".into(),
+            }),
+        )
+            .into_response();
+    }
+
     let policy = state.policy.read().await.clone();
     let active_count = sessions
         .values()
         .filter(|s| s.status == SessionStatus::Active)
         .count();
 
-    if active_count >= policy.max_sessions {
+    if active_count >= policy.max_sessions && target_session.status != SessionStatus::Active {
         let maybe_handoff_id = sessions
             .values()
             .filter(|s| s.status == SessionStatus::Active)
@@ -575,22 +595,14 @@ async fn accept_session(
         }
     }
 
-    match sessions.get_mut(&id) {
-        Some(session) => {
-            session.status = SessionStatus::Active;
-            state
-                .audit("session.accepted", format!("session {} accepted", id))
-                .await;
-            (StatusCode::OK, Json(session.clone())).into_response()
-        }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "session not found".into(),
-            }),
-        )
-            .into_response(),
-    }
+    let session = sessions
+        .get_mut(&id)
+        .expect("session existence validated above");
+    session.status = SessionStatus::Active;
+    state
+        .audit("session.accepted", format!("session {} accepted", id))
+        .await;
+    (StatusCode::OK, Json(session.clone())).into_response()
 }
 
 async fn stop_session(
@@ -853,6 +865,15 @@ async fn update_policy(
         policy.audio_output_device = audio_output_device;
     }
     if let Some(target_display) = payload.target_display {
+        if target_display.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "target_display cannot be empty".into(),
+                }),
+            )
+                .into_response();
+        }
         policy.display.target_display = target_display;
     }
     if let Some(scaling_mode) = payload.scaling_mode {
@@ -1046,5 +1067,105 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_policy_rejects_empty_target_display() {
+        let app = app(AppState::bootstrap("token".into()));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/policy")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"target_display":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn accept_stopped_session_is_rejected() {
+        let app = app(AppState::bootstrap("token".into()));
+        let seeded_id = seeded_session_id(&app).await;
+
+        let _stopped = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{seeded_id}/stop"))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{seeded_id}/accept"))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+    #[tokio::test]
+    async fn accept_missing_session_does_not_stop_existing_active_session() {
+        let app = app(AppState::bootstrap("token".into()));
+
+        let seeded_id = seeded_session_id(&app).await;
+        let _accepted = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{seeded_id}/accept"))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{}/accept", Uuid::new_v4()))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let sessions: Vec<SessionDescriptor> = serde_json::from_slice(&body).unwrap();
+        let seeded = sessions.into_iter().find(|s| s.id == seeded_id).unwrap();
+        assert_eq!(seeded.status, SessionStatus::Active);
     }
 }

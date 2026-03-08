@@ -104,7 +104,8 @@ A `SessionDescriptor` object.
 
 Transitions a session to `active` and may perform policy-based active session handoff when at session limit.
 
-- `404` if session ID does not exist.
+- `404` if session ID does not exist (no handoff is performed).
+- `409` if the session is already `stopped`.
 
 ### `POST /v1/sessions/{id}/stop` (auth required)
 
@@ -209,6 +210,7 @@ Validation:
 - `max_sessions` must be between 1 and 4.
 - `rotation_degrees` must be one of `0`, `90`, `180`, `270`.
 - `audio_output_device` cannot be empty.
+- `target_display` cannot be empty.
 
 ---
 
