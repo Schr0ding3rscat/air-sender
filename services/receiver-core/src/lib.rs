@@ -329,22 +329,6 @@ async fn create_mock_session(
     }
 
     let policy = state.policy.read().await.clone();
-    let sessions = state.sessions.read().await;
-    let active_sessions = sessions
-        .values()
-        .filter(|s| s.status == SessionStatus::Active || s.status == SessionStatus::Pending)
-        .count();
-    drop(sessions);
-
-    if active_sessions >= policy.max_sessions {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: format!("max sessions reached ({})", policy.max_sessions),
-            }),
-        )
-            .into_response();
-    }
 
     let id = Uuid::new_v4();
     let descriptor = SessionDescriptor {
@@ -359,11 +343,25 @@ async fn create_mock_session(
         created_at: Utc::now(),
     };
 
-    state
-        .sessions
-        .write()
-        .await
-        .insert(descriptor.id, descriptor.clone());
+    {
+        let mut sessions = state.sessions.write().await;
+        let active_sessions = sessions
+            .values()
+            .filter(|s| s.status == SessionStatus::Active || s.status == SessionStatus::Pending)
+            .count();
+
+        if active_sessions >= policy.max_sessions {
+            return (
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: format!("max sessions reached ({})", policy.max_sessions),
+                }),
+            )
+                .into_response();
+        }
+
+        sessions.insert(descriptor.id, descriptor.clone());
+    }
     state
         .audit(
             "session.created",
