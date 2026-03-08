@@ -122,10 +122,10 @@ Public/readonly endpoints:
 - `GET /health`
 - `GET /v1/dashboard`
 - `GET /v1/protocols`
+- `GET /v1/policy`
 - `GET /v1/sessions`
 - `GET /v1/recordings`
 - `GET /v1/trust`
-- `GET /v1/policy`
 - `GET /v1/audit`
 
 Mutating endpoints (require `Authorization: Bearer <AIR_SENDER_API_TOKEN>`):
@@ -133,6 +133,7 @@ Mutating endpoints (require `Authorization: Bearer <AIR_SENDER_API_TOKEN>`):
 - `POST /v1/sessions`
 - `POST /v1/sessions/{id}/accept`
 - `POST /v1/sessions/{id}/stop`
+- `PATCH /v1/protocols/{id}`
 - `POST /v1/recordings/start`
 - `POST /v1/recordings/stop`
 - `POST /v1/trust/{deviceId}`
