@@ -1,0 +1,11 @@
+version: "3.9"
+services:
+  receiver-core:
+    build:
+      context: ./services/receiver-core
+    ports:
+      - "9760:9760"
+    environment:
+      AIR_SENDER_BIND: 0.0.0.0:9760
+      AIR_SENDER_API_TOKEN: dev-token
+    restart: unless-stopped
