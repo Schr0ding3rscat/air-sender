@@ -73,6 +73,25 @@ ok
 
 ---
 
+### 4) Run the full local feature test (no second device required)
+
+This command boots `receiver-core`, simulates sender actions through the API (session create/accept/stop, recording, trust, protocol toggles, policy updates), and verifies every major feature path from one machine:
+
+```bash
+./scripts/test-all-features-local.sh
+```
+
+If you already have `receiver-core` running, reuse it instead of starting a second process:
+
+```bash
+AIR_SENDER_TEST_RUN_CORE=0 \
+AIR_SENDER_TEST_BASE_URL=http://127.0.0.1:9760 \
+AIR_SENDER_TEST_API_TOKEN=dev-token \
+./scripts/test-all-features-local.sh
+```
+
+---
+
 ## Repository layout
 
 ```text

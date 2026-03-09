@@ -55,7 +55,37 @@ npm run dev
 
 ---
 
-## 4) Manual verification flow
+## 4) One-command local feature test (no extra device required)
+
+Use the local end-to-end harness to validate the full simulated receiver workflow from a single machine:
+
+```bash
+./scripts/test-all-features-local.sh
+```
+
+What it verifies in one pass:
+
+1. All major read-only endpoints are reachable.
+2. Auth protection is enforced for mutating routes.
+3. Simulated sender session lifecycle: create → accept → stop.
+4. Recording lifecycle: start → stop for an active session.
+5. Protocol toggles (disable + re-enable).
+6. Trust lifecycle: add + revoke device trust.
+7. Policy update path with full payload coverage.
+8. Audit trail writes for performed actions.
+
+By default, the script starts `receiver-core` for you. To run against an existing local process:
+
+```bash
+AIR_SENDER_TEST_RUN_CORE=0 \
+AIR_SENDER_TEST_BASE_URL=http://127.0.0.1:9760 \
+AIR_SENDER_TEST_API_TOKEN=dev-token \
+./scripts/test-all-features-local.sh
+```
+
+---
+
+## 5) Manual verification flow (desktop)
 
 1. Launch core and desktop.
 2. In desktop UI, create a session.
@@ -67,7 +97,7 @@ npm run dev
 
 ---
 
-## 5) Curl-based API sanity checks
+## 6) Curl-based API sanity checks
 
 ```bash
 TOKEN=dev-token
@@ -83,7 +113,7 @@ curl -s -X PATCH "$BASE/v1/policy" \
 
 ---
 
-## 6) Codebase orientation
+## 7) Codebase orientation
 
 - `services/receiver-core/src/lib.rs`
   - API routes, state model, auth checks, handlers, tests
@@ -103,7 +133,7 @@ Additional validation checks worth testing manually:
 - `POST /v1/sessions/{id}/accept` returns `404` for unknown IDs without modifying active sessions.
 - `POST /v1/sessions/{id}/accept` rejects stopped sessions (`409`).
 
-## 7) Common pitfalls
+## 8) Common pitfalls
 
 - Token mismatch between desktop and core causes `401` on actions.
 - Non-running core causes initial desktop fetch failures.
