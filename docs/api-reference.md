@@ -114,6 +114,27 @@ Transitions a session to `stopped` and removes active recording for that session
 - `404` if session ID does not exist.
 
 ---
+### `POST /v1/sessions/{id}/reconnect` (auth required)
+
+Reconnect hint endpoint used during transient drops/jitter.
+
+**Request**
+
+```json
+{
+  "jitter_ms": 120,
+  "dropped": true
+}
+```
+
+Behavior:
+
+- returns `resumed=true` and transitions to `active` when reconnect is within reliability thresholds.
+- returns `resumed=false` and transitions to `queued` when thresholds are exceeded.
+- `404` if session ID does not exist.
+- `409` if session is already stopped.
+
+---
 
 ## Recording
 
@@ -211,6 +232,17 @@ Validation:
 - `rotation_degrees` must be one of `0`, `90`, `180`, `270`.
 - `audio_output_device` cannot be empty.
 - `target_display` cannot be empty.
+- `target_latency_ms` must be between 30 and 300.
+- `max_bitrate_mbps` must be between 8 and 120.
+- `baseline_profile` cannot be empty.
+
+
+### `GET /v1/performance/report`
+
+Returns expected throughput/latency tuning output for:
+
+- `baseline_1080p60`
+- `best_effort_4k`
 
 ---
 
@@ -225,8 +257,16 @@ Returns chronological list of audit events with fields:
 - `kind`
 - `message`
 
-Audit includes successful operations (policy, protocol, session, recording, trust) and denied security attempts.
+Audit includes successful operations (policy, protocol, session, recording, trust, reconnect) and denied security attempts.
 
+### `GET /v1/audit/export`
+
+Returns export-friendly audit payload with:
+
+- `exported_at`
+- `format`
+- `total_events`
+- `events`
 
 ---
 
@@ -292,3 +332,10 @@ Verifies a signed profile envelope and returns:
   "valid": true
 }
 ```
+
+
+## Diagnostics
+
+### `GET /v1/diagnostics/bundle`
+
+Returns a structured diagnostics bundle containing dashboard counters, policy, reliability settings, sessions, recordings, and protocol status for support escalation.

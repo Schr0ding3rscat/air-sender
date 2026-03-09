@@ -61,23 +61,25 @@ Delivered in this sprint:
 
 ---
 
-## Month 3 (Weeks 9-12): Hardening and release readiness
+## Month 3 (Weeks 9-12): Hardening and release readiness ✅ Complete
+
+Delivered in this sprint:
 
 - Reliability and performance hardening:
-  - Reconnect resilience for network jitter and transient drops.
-  - Latency/throughput tuning for 1080p60 baseline and 4K best-effort path.
-  - Soak tests under repeated connect/disconnect cycles.
+  - Reconnect resilience API with bounded retry behavior for transient drops (`POST /v1/sessions/{id}/reconnect`).
+  - Performance tuning controls in policy (`target_latency_ms`, `max_bitrate_mbps`, `baseline_profile`, `allow_4k_best_effort`) and a synthesized throughput/latency report (`GET /v1/performance/report`).
+  - Soak coverage for repeated connect/disconnect cycles via `scripts/soak-connect-disconnect.sh`.
 - Compatibility and quality:
-  - Expanded matrix across major iOS/macOS, Android/ChromeOS, and Windows senders.
-  - Regression suite for discovery, pairing, routing, and rendering.
+  - Expanded sender compatibility matrix across major iOS/macOS, Android/ChromeOS, and Windows classes in `docs/compatibility-matrix.md`.
+  - Regression suite expanded to cover reconnect behavior, performance policy validation, diagnostics, and export endpoints.
 - Enterprise-readiness:
-  - Installer/signing pipeline and update rollback flow.
-  - Audit/event export and structured diagnostics bundle.
-  - Admin CLI parity for key UI actions.
+  - Installer/signing + rollback flow documented and scripted (`scripts/release-installer-sign-and-rollback.sh`).
+  - Audit/event export (`GET /v1/audit/export`) and structured diagnostics bundle (`GET /v1/diagnostics/bundle`).
+  - Admin CLI parity script for key UI actions (`scripts/admin-cli.sh`).
 - Release operations:
-  - Security review and threat-model sign-off.
-  - Deployment runbooks and support playbooks.
-  - GA readiness review with objective pass/fail gates.
+  - Security review + threat model sign-off doc (`docs/security-review-month3.md`).
+  - Deployment runbook + support playbook updates in `docs/deployment.md` and `docs/operations.md`.
+  - GA readiness gates and objective pass/fail rubric in `docs/ga-readiness.md`.
 
 **Exit criteria**
 

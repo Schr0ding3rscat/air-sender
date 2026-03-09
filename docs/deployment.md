@@ -93,3 +93,10 @@ docker compose down
 - Run smoke checks from the verification checklist.
 - Confirm desktop app remains API-compatible.
 - Roll back if health/auth invariants fail.
+
+## Month 3 release operations additions
+
+- Use `scripts/release-installer-sign-and-rollback.sh` to generate release artifacts, signatures, and rollback markers.
+- Before rollout, archive `/v1/audit/export` output for baseline operational audit.
+- In incident response, capture `/v1/diagnostics/bundle` and attach to support ticket.
+- Rollback trigger: any failed GA gate or sustained reconnect failures above SLO.

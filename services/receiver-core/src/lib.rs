@@ -146,6 +146,33 @@ pub struct ReceiverPolicy {
     pub queue_policy: QueuePolicy,
     pub audio_output_device: String,
     pub display: DisplayPolicy,
+    #[serde(default)]
+    pub performance: PerformancePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformancePolicy {
+    pub target_latency_ms: u16,
+    pub max_bitrate_mbps: u16,
+    pub baseline_profile: String,
+    pub allow_4k_best_effort: bool,
+}
+
+impl Default for PerformancePolicy {
+    fn default() -> Self {
+        Self {
+            target_latency_ms: 85,
+            max_bitrate_mbps: 24,
+            baseline_profile: "1080p60".to_string(),
+            allow_4k_best_effort: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilityPolicy {
+    pub reconnect_grace_ms: u64,
+    pub max_reconnect_attempts: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +278,57 @@ pub struct UpdatePolicyRequest {
     pub scaling_mode: Option<ScalingMode>,
     pub rotation_degrees: Option<u16>,
     pub preserve_aspect_ratio: Option<bool>,
+    pub target_latency_ms: Option<u16>,
+    pub max_bitrate_mbps: Option<u16>,
+    pub baseline_profile: Option<String>,
+    pub allow_4k_best_effort: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionReconnectRequest {
+    pub jitter_ms: u16,
+    pub dropped: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionReconnectResponse {
+    pub session_id: Uuid,
+    pub status: SessionStatus,
+    pub reconnect_attempts: u8,
+    pub resumed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThroughputProbeResult {
+    pub profile: String,
+    pub expected_fps: u16,
+    pub expected_latency_ms: u16,
+    pub target_bitrate_mbps: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PerformanceReport {
+    pub baseline_1080p60: ThroughputProbeResult,
+    pub best_effort_4k: ThroughputProbeResult,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditExport {
+    pub exported_at: DateTime<Utc>,
+    pub format: String,
+    pub total_events: usize,
+    pub events: Vec<AuditEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticsBundle {
+    pub generated_at: DateTime<Utc>,
+    pub dashboard: DashboardSummary,
+    pub policy: ReceiverPolicy,
+    pub reliability: ReliabilityPolicy,
+    pub sessions: Vec<SessionDescriptor>,
+    pub active_recordings: Vec<RecordingState>,
+    pub protocol_status: Vec<ProtocolDescriptor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +357,8 @@ pub struct AppState {
     policy: Arc<RwLock<ReceiverPolicy>>,
     operator_settings: Arc<RwLock<OperatorSettings>>,
     signing_secret: Arc<Vec<u8>>,
+    reconnect_attempts: Arc<RwLock<HashMap<Uuid, u8>>>,
+    reliability: Arc<RwLock<ReliabilityPolicy>>,
 }
 
 impl AppState {
@@ -356,6 +436,7 @@ impl AppState {
                     rotation_degrees: 0,
                     preserve_aspect_ratio: true,
                 },
+                performance: PerformancePolicy::default(),
             })),
             operator_settings: Arc::new(RwLock::new(OperatorSettings {
                 device_name: "Air Sender Receiver".to_string(),
@@ -363,6 +444,11 @@ impl AppState {
                 network_visibility: NetworkVisibility::Lan,
             })),
             signing_secret: Arc::new(format!("{}-config-signing", api_token).into_bytes()),
+            reconnect_attempts: Arc::new(RwLock::new(HashMap::new())),
+            reliability: Arc::new(RwLock::new(ReliabilityPolicy {
+                reconnect_grace_ms: 4_000,
+                max_reconnect_attempts: 5,
+            })),
         }
     }
 
@@ -418,6 +504,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions", get(get_sessions).post(create_mock_session))
         .route("/v1/sessions/:id/accept", post(accept_session))
         .route("/v1/sessions/:id/stop", post(stop_session))
+        .route("/v1/sessions/:id/reconnect", post(reconnect_session))
         .route("/v1/recordings", get(get_recordings))
         .route("/v1/recordings/start", post(start_recording))
         .route("/v1/recordings/stop", post(stop_recording))
@@ -432,7 +519,10 @@ pub fn app(state: AppState) -> Router {
             get(get_operator_settings).patch(update_operator_settings),
         )
         .route("/v1/audit", get(get_audit))
+        .route("/v1/audit/export", get(export_audit))
         .route("/v1/policy", get(get_policy).patch(update_policy))
+        .route("/v1/performance/report", get(get_performance_report))
+        .route("/v1/diagnostics/bundle", get(get_diagnostics_bundle))
         .route("/v1/config-profiles/sign", post(sign_config_profile))
         .route("/v1/config-profiles/verify", post(verify_config_profile))
         .with_state(state)
@@ -730,6 +820,77 @@ async fn stop_session(
     }
 }
 
+async fn reconnect_session(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionReconnectRequest>,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized reconnect_session")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let reliability = state.reliability.read().await.clone();
+    let mut sessions = state.sessions.write().await;
+    let Some(session) = sessions.get_mut(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "session not found".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    if session.status == SessionStatus::Stopped {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "cannot reconnect a stopped session".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut attempts = state.reconnect_attempts.write().await;
+    let count = attempts.entry(id).or_insert(0);
+    *count = count.saturating_add(1);
+
+    let resumed = payload.dropped
+        && u64::from(payload.jitter_ms) <= reliability.reconnect_grace_ms
+        && *count <= reliability.max_reconnect_attempts;
+
+    session.status = if resumed {
+        SessionStatus::Active
+    } else {
+        SessionStatus::Queued
+    };
+
+    state
+        .audit(
+            "session.reconnect",
+            format!(
+                "session {} reconnect dropped={} jitter_ms={} resumed={} attempts={}",
+                id, payload.dropped, payload.jitter_ms, resumed, *count
+            ),
+        )
+        .await;
+
+    (
+        StatusCode::OK,
+        Json(SessionReconnectResponse {
+            session_id: id,
+            status: session.status.clone(),
+            reconnect_attempts: *count,
+            resumed,
+        }),
+    )
+        .into_response()
+}
+
 async fn get_recordings(State(state): State<AppState>) -> Json<Vec<RecordingState>> {
     Json(state.recordings.read().await.values().cloned().collect())
 }
@@ -918,6 +1079,16 @@ async fn get_audit(State(state): State<AppState>) -> Json<Vec<AuditEvent>> {
     Json(state.audit_log.read().await.clone())
 }
 
+async fn export_audit(State(state): State<AppState>) -> Json<AuditExport> {
+    let events = state.audit_log.read().await.clone();
+    Json(AuditExport {
+        exported_at: Utc::now(),
+        format: "jsonl-compatible".to_string(),
+        total_events: events.len(),
+        events,
+    })
+}
+
 async fn get_operator_settings(State(state): State<AppState>) -> Json<OperatorSettings> {
     Json(state.operator_settings.read().await.clone())
 }
@@ -1000,6 +1171,30 @@ async fn update_policy(
         }
     }
 
+    if let Some(target_latency_ms) = payload.target_latency_ms {
+        if !(30..=300).contains(&target_latency_ms) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "target_latency_ms must be between 30 and 300".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some(max_bitrate_mbps) = payload.max_bitrate_mbps {
+        if !(8..=120).contains(&max_bitrate_mbps) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "max_bitrate_mbps must be between 8 and 120".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let mut policy = state.policy.write().await;
     if let Some(acceptance) = payload.acceptance {
         policy.acceptance = acceptance;
@@ -1043,12 +1238,82 @@ async fn update_policy(
     if let Some(preserve_aspect_ratio) = payload.preserve_aspect_ratio {
         policy.display.preserve_aspect_ratio = preserve_aspect_ratio;
     }
+    if let Some(target_latency_ms) = payload.target_latency_ms {
+        policy.performance.target_latency_ms = target_latency_ms;
+    }
+    if let Some(max_bitrate_mbps) = payload.max_bitrate_mbps {
+        policy.performance.max_bitrate_mbps = max_bitrate_mbps;
+    }
+    if let Some(baseline_profile) = payload.baseline_profile {
+        if baseline_profile.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "baseline_profile cannot be empty".into(),
+                }),
+            )
+                .into_response();
+        }
+        policy.performance.baseline_profile = baseline_profile;
+    }
+    if let Some(allow_4k_best_effort) = payload.allow_4k_best_effort {
+        policy.performance.allow_4k_best_effort = allow_4k_best_effort;
+    }
 
     state
         .audit("policy.updated", "receiver policy updated")
         .await;
 
     (StatusCode::OK, Json(policy.clone())).into_response()
+}
+
+async fn get_performance_report(State(state): State<AppState>) -> Json<PerformanceReport> {
+    let policy = state.policy.read().await.clone();
+    let baseline = ThroughputProbeResult {
+        profile: policy.performance.baseline_profile,
+        expected_fps: 60,
+        expected_latency_ms: policy.performance.target_latency_ms,
+        target_bitrate_mbps: policy.performance.max_bitrate_mbps,
+    };
+
+    let best_effort_4k = ThroughputProbeResult {
+        profile: if policy.performance.allow_4k_best_effort {
+            "4k-best-effort".to_string()
+        } else {
+            "disabled".to_string()
+        },
+        expected_fps: if policy.performance.allow_4k_best_effort {
+            45
+        } else {
+            0
+        },
+        expected_latency_ms: policy.performance.target_latency_ms.saturating_add(35),
+        target_bitrate_mbps: policy.performance.max_bitrate_mbps.saturating_add(12),
+    };
+
+    Json(PerformanceReport {
+        baseline_1080p60: baseline,
+        best_effort_4k,
+    })
+}
+
+async fn get_diagnostics_bundle(State(state): State<AppState>) -> Json<DiagnosticsBundle> {
+    let sessions: Vec<SessionDescriptor> = state.sessions.read().await.values().cloned().collect();
+    let recordings: Vec<RecordingState> = state.recordings.read().await.values().cloned().collect();
+    let protocol_status = state.protocols.read().await.clone();
+    let policy = state.policy.read().await.clone();
+    let reliability = state.reliability.read().await.clone();
+    let dashboard = get_dashboard(State(state.clone())).await.0;
+
+    Json(DiagnosticsBundle {
+        generated_at: Utc::now(),
+        dashboard,
+        policy,
+        reliability,
+        sessions,
+        active_recordings: recordings,
+        protocol_status,
+    })
 }
 
 async fn sign_config_profile(
@@ -1450,6 +1715,94 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn reconnect_session_endpoint_handles_jitter_drop() {
+        let app = app(AppState::bootstrap("token".into()));
+        let seeded_id = seeded_session_id(&app).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{seeded_id}/reconnect"))
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"jitter_ms":200,"dropped":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("\"resumed\":true"));
+    }
+
+    #[tokio::test]
+    async fn performance_and_diagnostics_endpoints_are_available() {
+        let app = app(AppState::bootstrap("token".into()));
+
+        let perf = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/performance/report")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(perf.status(), StatusCode::OK);
+
+        let diag = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/diagnostics/bundle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(diag.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn update_policy_rejects_invalid_performance_ranges() {
+        let app = app(AppState::bootstrap("token".into()));
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/policy")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"target_latency_ms":5}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/policy")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"max_bitrate_mbps":200}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
     #[tokio::test]

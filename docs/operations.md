@@ -73,3 +73,13 @@ Operational implication:
 - Pairing PIN endpoint: `POST /v1/pairing/pin`.
 - Signed profile endpoints: `POST /v1/config-profiles/sign` and `POST /v1/config-profiles/verify`.
 - Per-protocol enablement: `PATCH /v1/protocols/{id}`.
+
+## Month 3 support playbook updates
+
+- First-response triage sequence:
+  1. `GET /v1/dashboard`
+  2. `GET /v1/audit/export`
+  3. `GET /v1/diagnostics/bundle`
+- For transient sender issues, check reconnect audit events (`session.reconnect`) and attempt counts.
+- For policy regressions, compare requested vs effective `performance` policy fields in diagnostics bundles.
+- Admin CLI fallback: `scripts/admin-cli.sh` for key UI-equivalent actions during remote support.
