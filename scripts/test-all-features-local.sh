@@ -107,7 +107,7 @@ fi
 
 echo "Running full local API feature test against $BASE_URL"
 
-for endpoint in /v1/dashboard /v1/protocols /v1/policy /v1/sessions /v1/recordings /v1/trust /v1/audit; do
+for endpoint in /v1/dashboard /v1/protocols /v1/policy /v1/sessions /v1/recordings /v1/trust /v1/audit /v1/operator/settings; do
   output="$(request GET "$endpoint" no)"
   expect_status "GET $endpoint" 200 "$output"
 done
@@ -146,6 +146,22 @@ expect_status "revoke trusted device" 200 "$output"
 policy_payload='{"acceptance":"ask","max_sessions":3,"queue_policy":"teacher-priority","audio_output_device":"hdmi-main","target_display":"display-2","scaling_mode":"fit","rotation_degrees":90,"preserve_aspect_ratio":true}'
 output="$(request PATCH "/v1/policy" yes "$policy_payload")"
 expect_status "update policy" 200 "$output"
+
+
+
+output="$(request POST "/v1/pairing/pin" yes)"
+expect_status "generate pairing pin" 200 "$output"
+
+output="$(request PATCH "/v1/operator/settings" yes '{"device_name":"Lab Receiver","pin_policy":"first-pair-only","network_visibility":"private-only"}')"
+expect_status "update operator settings" 200 "$output"
+
+sign_payload='{"name":"nightly-profile","policy":{"acceptance":"ask","max_sessions":2,"queue_policy":"teacher-priority","audio_output_device":"hdmi-main","display":{"target_display":"display-2","scaling_mode":"fit","rotation_degrees":0,"preserve_aspect_ratio":true}},"operator":{"device_name":"Lab Receiver","pin_policy":"first-pair-only","network_visibility":"private-only"}}'
+output="$(request POST "/v1/config-profiles/sign" yes "$sign_payload")"
+expect_status "sign config profile" 200 "$output"
+signed_body="$(json_body "$output")"
+verify_payload="$(python3 -c 'import json,sys;obj=json.loads(sys.argv[1]);print(json.dumps({"profile":obj["profile"],"signature":obj["signature"]}))' "$signed_body")"
+output="$(request POST "/v1/config-profiles/verify" yes "$verify_payload")"
+expect_status "verify config profile" 200 "$output"
 
 output="$(request POST "/v1/sessions/$SESSION_ID/stop" yes)"
 expect_status "stop session" 200 "$output"

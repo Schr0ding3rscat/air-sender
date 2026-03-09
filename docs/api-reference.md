@@ -226,3 +226,69 @@ Returns chronological list of audit events with fields:
 - `message`
 
 Audit includes successful operations (policy, protocol, session, recording, trust) and denied security attempts.
+
+
+---
+
+## Pairing PIN
+
+### `POST /v1/pairing/pin` (auth required)
+
+Generates a 6-digit on-screen PIN with expiry metadata.
+
+**Response 200**
+
+```json
+{
+  "pin": "123456",
+  "expires_at": "2026-01-01T00:00:00Z"
+}
+```
+
+---
+
+## Operator settings
+
+### `GET /v1/operator/settings`
+
+Returns current operator UX controls:
+
+- `device_name`
+- `pin_policy` (`always`, `first-pair-only`, `disabled`)
+- `network_visibility` (`lan`, `private-only`, `hidden`)
+
+### `PATCH /v1/operator/settings` (auth required)
+
+Partial update for operator settings.
+
+**Request (example)**
+
+```json
+{
+  "device_name": "Room 301 Receiver",
+  "pin_policy": "first-pair-only",
+  "network_visibility": "private-only"
+}
+```
+
+Validation:
+
+- `device_name` cannot be empty when provided.
+
+---
+
+## Signed configuration profiles
+
+### `POST /v1/config-profiles/sign` (auth required)
+
+Signs a complete config profile for managed rollout.
+
+### `POST /v1/config-profiles/verify` (auth required)
+
+Verifies a signed profile envelope and returns:
+
+```json
+{
+  "valid": true
+}
+```

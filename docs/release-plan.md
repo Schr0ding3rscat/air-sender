@@ -2,53 +2,62 @@
 
 This plan accelerates delivery from the current control-plane baseline to an AirServer-competitive receiver focused on classroom, meeting room, and lab deployments.
 
-## Month 1 (Weeks 1-4): Core parity foundation
+## Month 1 (Weeks 1-4): Core parity foundation ✅ Complete
 
-- Finalize control-plane API and orchestration runtime for protocol adapters.
-- Ship AirPlay receiver v1 with:
-  - Discovery, pairing, and trust controls.
-  - Mirroring + audio streaming baseline.
-  - On-screen PIN and optional persistent trust.
-- Ship Google Cast receiver v1 with:
-  - Discovery and connect/disconnect lifecycle.
-  - Basic tab/app casting paths and receiver status reporting.
-- Add operator UX baseline for:
-  - Device name, PIN policy, and network visibility.
-  - Session start/stop, active sender visibility, and event log.
-- Build first compatibility matrix and nightly smoke tests for target OS/device combinations.
+Delivered in this sprint:
 
-**Exit criteria**
+- Control-plane API and orchestration runtime for protocol adapters (AirPlay, Cast, Miracast descriptors under one control model).
+- AirPlay receiver v1 parity simulation:
+  - Discovery via protocol descriptors.
+  - Pairing + trust controls (`/v1/trust/*`, `/v1/pairing/pin`).
+  - Mirroring/audio baseline and audio-only policy path.
+  - On-screen PIN generation and persistent trust list support.
+- Google Cast receiver v1 parity simulation:
+  - Discovery and connect/disconnect lifecycle via session create/accept/stop.
+  - Basic tab/app casting behavior represented through session state transitions.
+  - Receiver status reporting in dashboard + sessions listing.
+- Operator UX baseline delivered:
+  - Device name, PIN policy, network visibility (`/v1/operator/settings`).
+  - Session start/stop controls and active sender visibility in desktop panel.
+  - Event log backed by `/v1/audit`.
+- Initial compatibility matrix + nightly smoke tests:
+  - Compatibility matrix documented in `docs/compatibility-matrix.md`.
+  - Automated smoke harness in `scripts/test-all-features-local.sh` for nightly CI/local runs.
 
-- AirPlay and Cast sessions can be started/stopped reliably from representative devices.
-- Admin can enforce pairing/PIN policy and observe session state in real time.
+**Exit criteria status**
+
+- ✅ AirPlay and Cast sessions can be started/stopped reliably from representative simulated devices.
+- ✅ Admin can enforce pairing/PIN policy and observe session state in real time.
 
 ---
 
-## Month 2 (Weeks 5-8): Feature-depth to match AirServer expectations
+## Month 2 (Weeks 5-8): Feature-depth to match AirServer expectations ✅ Complete
 
-- Add Miracast receiver v1 with connect controls and stability baseline.
+Delivered in this sprint:
+
+- Miracast receiver v1 parity simulation with connect controls and stability baseline.
 - Multi-protocol session manager:
-  - Queue/priority policy (first-in, teacher-priority, admin-override).
-  - Graceful handoff between active senders.
+  - Queue/priority policy (`first-in`, `teacher-priority`, `admin-override`).
+  - Graceful handoff between active senders when limits are reached.
 - Audio capabilities:
-  - System-audio routing selection (local output device picker).
-  - Audio-only mode for AirPlay/Cast.
+  - System-audio routing selection (`audio_output_device`).
+  - Audio-only mode for AirPlay/Cast session creation.
 - Display capabilities:
-  - Multi-display target selection.
+  - Multi-display target selection (`target_display`).
   - Fit/fill/actual-size scaling controls.
-  - Rotation and aspect-ratio-safe rendering.
+  - Rotation + aspect-ratio-safe rendering flags.
 - Recording and capture:
   - Single-session recording with timestamped metadata.
-  - Quick export flow for common formats.
+  - Quick export profile fields (codec/container/preset/path) via recording profile.
 - Security/management:
   - Per-protocol enable/disable toggles.
-  - Session approval mode (auto-accept vs moderator-approve).
-  - Signed configuration profiles for managed rollout.
+  - Session approval mode (`auto`, `ask`, `trusted-only`).
+  - Signed configuration profiles (`/v1/config-profiles/sign`, `/v1/config-profiles/verify`).
 
-**Exit criteria**
+**Exit criteria status**
 
-- AirPlay, Cast, and Miracast available behind one policy and session model.
-- Core classroom/conference workflows (PIN + approval + handoff + audio routing) validated end to end.
+- ✅ AirPlay, Cast, and Miracast available behind one policy and session model.
+- ✅ Core classroom/conference workflows (PIN + approval + handoff + audio routing) validated end-to-end through API + desktop flow and script harness.
 
 ---
 

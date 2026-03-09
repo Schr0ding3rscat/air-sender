@@ -148,6 +148,74 @@ pub struct ReceiverPolicy {
     pub display: DisplayPolicy,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PinPolicy {
+    Always,
+    FirstPairOnly,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkVisibility {
+    Lan,
+    PrivateOnly,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorSettings {
+    pub device_name: String,
+    pub pin_policy: PinPolicy,
+    pub network_visibility: NetworkVisibility,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateOperatorSettingsRequest {
+    pub device_name: Option<String>,
+    pub pin_policy: Option<PinPolicy>,
+    pub network_visibility: Option<NetworkVisibility>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PairingPinResponse {
+    pub pin: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedConfigProfile {
+    pub name: String,
+    pub issued_at: DateTime<Utc>,
+    pub policy: ReceiverPolicy,
+    pub operator: OperatorSettings,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SignConfigProfileRequest {
+    pub name: String,
+    pub policy: ReceiverPolicy,
+    pub operator: OperatorSettings,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SignedConfigEnvelope {
+    pub profile: SignedConfigProfile,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VerifyConfigProfileRequest {
+    pub profile: SignedConfigProfile,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VerifyConfigProfileResponse {
+    pub valid: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StartRecordingRequest {
     pub session_id: Uuid,
@@ -209,6 +277,8 @@ pub struct AppState {
     recordings: Arc<RwLock<HashMap<Uuid, RecordingState>>>,
     audit_log: Arc<RwLock<Vec<AuditEvent>>>,
     policy: Arc<RwLock<ReceiverPolicy>>,
+    operator_settings: Arc<RwLock<OperatorSettings>>,
+    signing_secret: Arc<Vec<u8>>,
 }
 
 impl AppState {
@@ -269,7 +339,7 @@ impl AppState {
         );
 
         Self {
-            api_token,
+            api_token: api_token.clone(),
             protocols: Arc::new(RwLock::new(protocols)),
             sessions: Arc::new(RwLock::new(sessions)),
             trusted_devices: Arc::new(RwLock::new(HashSet::new())),
@@ -287,6 +357,12 @@ impl AppState {
                     preserve_aspect_ratio: true,
                 },
             })),
+            operator_settings: Arc::new(RwLock::new(OperatorSettings {
+                device_name: "Air Sender Receiver".to_string(),
+                pin_policy: PinPolicy::Always,
+                network_visibility: NetworkVisibility::Lan,
+            })),
+            signing_secret: Arc::new(format!("{}-config-signing", api_token).into_bytes()),
         }
     }
 
@@ -323,6 +399,16 @@ impl AppState {
     }
 }
 
+fn profile_signature(secret: &[u8], profile: &SignedConfigProfile) -> String {
+    let payload = serde_json::to_vec(profile).expect("serialize profile for signing");
+    let mut hash = 0xcbf29ce484222325u64;
+    for b in secret.iter().chain(payload.iter()) {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", hash)
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -336,12 +422,19 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/recordings/start", post(start_recording))
         .route("/v1/recordings/stop", post(stop_recording))
         .route("/v1/trust", get(get_trusted_devices))
+        .route("/v1/pairing/pin", post(generate_pairing_pin))
         .route(
             "/v1/trust/:device_id",
             post(trust_device).delete(revoke_trust),
         )
+        .route(
+            "/v1/operator/settings",
+            get(get_operator_settings).patch(update_operator_settings),
+        )
         .route("/v1/audit", get(get_audit))
         .route("/v1/policy", get(get_policy).patch(update_policy))
+        .route("/v1/config-profiles/sign", post(sign_config_profile))
+        .route("/v1/config-profiles/verify", post(verify_config_profile))
         .with_state(state)
 }
 
@@ -738,6 +831,29 @@ async fn get_trusted_devices(State(state): State<AppState>) -> Json<Vec<String>>
     Json(state.trusted_devices.read().await.iter().cloned().collect())
 }
 
+async fn generate_pairing_pin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized generate_pairing_pin")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let pin = format!("{:06}", Utc::now().timestamp_subsec_millis() % 1_000_000);
+    let response = PairingPinResponse {
+        pin,
+        expires_at: Utc::now() + chrono::Duration::minutes(5),
+    };
+
+    state
+        .audit("pairing.pin.generated", "on-screen pin generated")
+        .await;
+    (StatusCode::OK, Json(response)).into_response()
+}
+
 async fn trust_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -800,6 +916,48 @@ async fn revoke_trust(
 
 async fn get_audit(State(state): State<AppState>) -> Json<Vec<AuditEvent>> {
     Json(state.audit_log.read().await.clone())
+}
+
+async fn get_operator_settings(State(state): State<AppState>) -> Json<OperatorSettings> {
+    Json(state.operator_settings.read().await.clone())
+}
+
+async fn update_operator_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateOperatorSettingsRequest>,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized update_operator_settings")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let mut settings = state.operator_settings.write().await;
+    if let Some(device_name) = payload.device_name {
+        if device_name.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "device_name cannot be empty".into(),
+                }),
+            )
+                .into_response();
+        }
+        settings.device_name = device_name;
+    }
+    if let Some(pin_policy) = payload.pin_policy {
+        settings.pin_policy = pin_policy;
+    }
+    if let Some(network_visibility) = payload.network_visibility {
+        settings.network_visibility = network_visibility;
+    }
+
+    state
+        .audit("operator.updated", "operator settings updated")
+        .await;
+    (StatusCode::OK, Json(settings.clone())).into_response()
 }
 
 async fn get_policy(State(state): State<AppState>) -> Json<ReceiverPolicy> {
@@ -891,6 +1049,70 @@ async fn update_policy(
         .await;
 
     (StatusCode::OK, Json(policy.clone())).into_response()
+}
+
+async fn sign_config_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SignConfigProfileRequest>,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized sign_config_profile")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    if payload.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "profile name cannot be empty".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    let profile = SignedConfigProfile {
+        name: payload.name,
+        issued_at: Utc::now(),
+        policy: payload.policy,
+        operator: payload.operator,
+    };
+    let signature = profile_signature(&state.signing_secret, &profile);
+    state
+        .audit("config.signed", "signed configuration profile")
+        .await;
+
+    (
+        StatusCode::OK,
+        Json(SignedConfigEnvelope { profile, signature }),
+    )
+        .into_response()
+}
+
+async fn verify_config_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<VerifyConfigProfileRequest>,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized verify_config_profile")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let expected = profile_signature(&state.signing_secret, &payload.profile);
+    let valid = expected == payload.signature;
+    state
+        .audit(
+            "config.verified",
+            format!("configuration profile valid={valid}"),
+        )
+        .await;
+
+    (StatusCode::OK, Json(VerifyConfigProfileResponse { valid })).into_response()
 }
 
 pub async fn serve(addr: SocketAddr, api_token: String) {
@@ -1119,6 +1341,116 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn generate_pairing_pin_requires_auth() {
+        let app = app(AppState::bootstrap("token".into()));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/pairing/pin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn signed_profile_round_trip_verifies() {
+        let app = app(AppState::bootstrap("token".into()));
+
+        let sign_payload = serde_json::json!({
+            "name": "test-profile",
+            "policy": {
+                "acceptance": "ask",
+                "max_sessions": 2,
+                "queue_policy": "first-in",
+                "audio_output_device": "default-speaker",
+                "display": {
+                    "target_display": "display-1",
+                    "scaling_mode": "fit",
+                    "rotation_degrees": 0,
+                    "preserve_aspect_ratio": true
+                }
+            },
+            "operator": {
+                "device_name": "Lab Receiver",
+                "pin_policy": "always",
+                "network_visibility": "lan"
+            }
+        });
+
+        let sign_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/config-profiles/sign")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(sign_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(sign_response.status(), StatusCode::OK);
+        let signed_bytes = sign_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+
+        let verify_response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/config-profiles/verify")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        String::from_utf8(signed_bytes.to_vec()).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(verify_response.status(), StatusCode::OK);
+        let body = verify_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        assert!(String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("\"valid\":true"));
+    }
+
+    #[tokio::test]
+    async fn operator_settings_reject_empty_device_name() {
+        let app = app(AppState::bootstrap("token".into()));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/operator/settings")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"device_name":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
     #[tokio::test]
     async fn accept_missing_session_does_not_stop_existing_active_session() {
