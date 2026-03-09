@@ -7,6 +7,8 @@ CORE_DIR="$ROOT_DIR/services/receiver-core"
 BASE_URL="${AIR_SENDER_TEST_BASE_URL:-http://127.0.0.1:9760}"
 API_TOKEN="${AIR_SENDER_TEST_API_TOKEN:-dev-token}"
 RUN_CORE="${AIR_SENDER_TEST_RUN_CORE:-1}"
+STARTUP_TIMEOUT_SEC="${AIR_SENDER_TEST_STARTUP_TIMEOUT_SEC:-60}"
+PREBUILD_CORE="${AIR_SENDER_TEST_PREBUILD_CORE:-0}"
 
 CORE_PID=""
 
@@ -57,21 +59,35 @@ json_body() {
   echo "$1" | sed '$d'
 }
 
-json_query() {
+json_get() {
   local payload="$1"
-  local expr="$2"
-  python3 -c 'import json,sys; print(eval(sys.argv[2],{"data":json.loads(sys.argv[1])}))' "$payload" "$expr"
+  local path="$2"
+  python3 -c 'import json,sys
+obj=json.loads(sys.argv[1])
+for part in sys.argv[2].split("."):
+    obj=obj[part]
+print(obj)' "$payload" "$path"
 }
 
 if [[ "$RUN_CORE" == "1" ]]; then
   echo "Starting receiver-core locally..."
+
+  if [[ "$PREBUILD_CORE" == "1" ]]; then
+    echo "Prebuilding receiver-core..."
+    (
+      cd "$CORE_DIR"
+      cargo build >/tmp/air-sender-core.log 2>&1
+    )
+  fi
+
   (
     cd "$CORE_DIR"
     AIR_SENDER_BIND="${BASE_URL#http://}" AIR_SENDER_API_TOKEN="$API_TOKEN" cargo run >/tmp/air-sender-core.log 2>&1
   ) &
   CORE_PID="$!"
 
-  for _ in {1..40}; do
+  retries=$((STARTUP_TIMEOUT_SEC * 2))
+  for _ in $(seq 1 "$retries"); do
     if curl -sS "$BASE_URL/health" >/dev/null 2>&1; then
       break
     fi
@@ -82,7 +98,10 @@ fi
 health_status="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE_URL/health")"
 if [[ "$health_status" != "200" ]]; then
   echo "❌ receiver-core not reachable at $BASE_URL (health HTTP $health_status)"
-  [[ -f /tmp/air-sender-core.log ]] && echo "See /tmp/air-sender-core.log"
+  if [[ -f /tmp/air-sender-core.log ]]; then
+    echo "Showing recent /tmp/air-sender-core.log output:"
+    tail -n 120 /tmp/air-sender-core.log || true
+  fi
   exit 1
 fi
 
@@ -100,8 +119,8 @@ create_payload='{"protocol":"air-play","device_name":"Local Simulator","device_p
 output="$(request POST "/v1/sessions" yes "$create_payload")"
 expect_status "create simulated session" 201 "$output"
 session_body="$(json_body "$output")"
-SESSION_ID="$(json_query "$session_body" 'data["id"]')"
-DEVICE_ID="$(json_query "$session_body" 'data["device"]["id"]')"
+SESSION_ID="$(json_get "$session_body" 'id')"
+DEVICE_ID="$(json_get "$session_body" 'device.id')"
 
 a_output="$(request POST "/v1/sessions/$SESSION_ID/accept" yes)"
 expect_status "accept session" 200 "$a_output"
@@ -135,7 +154,7 @@ output="$(request GET "/v1/audit" no)"
 expect_status "audit log still available" 200 "$output"
 
 audit_body="$(json_body "$output")"
-audit_count="$(json_query "$audit_body" 'len(data)')"
+audit_count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$audit_body")"
 if [[ "$audit_count" -lt 6 ]]; then
   echo "❌ expected audit history to contain test actions, found only $audit_count events"
   exit 1

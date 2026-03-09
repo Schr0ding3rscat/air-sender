@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  receiver-core-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/receiver-core
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/receiver-core
+
+      - name: Run unit tests
+        run: cargo test --all-targets --all-features
+
+  local-feature-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/receiver-core
+
+      - name: Build receiver-core
+        working-directory: services/receiver-core
+        run: cargo build
+
+      - name: Start receiver-core
+        working-directory: services/receiver-core
+        run: |
+          AIR_SENDER_BIND=127.0.0.1:9760 AIR_SENDER_API_TOKEN=dev-token cargo run > /tmp/air-sender-core.log 2>&1 &
+          echo $! > /tmp/air-sender-core.pid
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9760/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "receiver-core failed to start"
+          tail -n 200 /tmp/air-sender-core.log || true
+          exit 1
+
+      - name: Run full local feature script against prestarted core
+        run: |
+          AIR_SENDER_TEST_RUN_CORE=0 \
+          AIR_SENDER_TEST_BASE_URL=http://127.0.0.1:9760 \
+          AIR_SENDER_TEST_API_TOKEN=dev-token \
+          ./scripts/test-all-features-local.sh
+
+      - name: Stop receiver-core
+        if: always()
+        run: |
+          if [ -f /tmp/air-sender-core.pid ]; then
+            kill "$(cat /tmp/air-sender-core.pid)" || true
+          fi

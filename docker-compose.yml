@@ -7,5 +7,5 @@ services:
       - "9760:9760"
     environment:
       AIR_SENDER_BIND: 0.0.0.0:9760
-      AIR_SENDER_API_TOKEN: dev-token
+      AIR_SENDER_API_TOKEN: ${AIR_SENDER_API_TOKEN:?Set AIR_SENDER_API_TOKEN in .env or shell before running docker compose}
     restart: unless-stopped

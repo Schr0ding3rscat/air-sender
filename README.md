@@ -127,10 +127,17 @@ air-sender/
 From repository root:
 
 ```bash
+cp .env.example .env
 docker compose up --build -d
 ```
 
-The provided compose file exposes `receiver-core` on `9760` and injects development defaults.
+The provided compose file exposes `receiver-core` on `9760` and requires an explicit `AIR_SENDER_API_TOKEN` from your `.env`/shell.
+
+For local development, set a dev token in `.env`:
+
+```bash
+AIR_SENDER_API_TOKEN=dev-token
+```
 
 ---
 
@@ -186,6 +193,11 @@ Recommended sequence:
 
 See `docs/development.md` for full setup, verification checklist, and change strategy.
 
+For CI and local automation, the repository includes `.github/workflows/ci.yml` with:
+
+1. `cargo test` for `services/receiver-core`
+2. a smoke run of `scripts/test-all-features-local.sh` against a prestarted core (`AIR_SENDER_TEST_RUN_CORE=0`)
+
 ---
 
 ## Troubleshooting
@@ -210,6 +222,14 @@ And point desktop to:
 
 ```bash
 AIR_SENDER_CORE_URL=http://127.0.0.1:9876 AIR_SENDER_API_TOKEN=dev-token npm run dev
+```
+
+### First run takes longer than expected
+
+The first `cargo run` may take longer due to dependency compilation. If `./scripts/test-all-features-local.sh` times out waiting for `/health`, increase startup wait or prebuild:
+
+```bash
+AIR_SENDER_TEST_STARTUP_TIMEOUT_SEC=120 AIR_SENDER_TEST_PREBUILD_CORE=1 ./scripts/test-all-features-local.sh
 ```
 
 ---
