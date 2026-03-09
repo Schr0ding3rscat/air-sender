@@ -139,3 +139,11 @@ Additional validation checks worth testing manually:
 - Non-running core causes initial desktop fetch failures.
 - Recording start fails unless session status is `active`.
 - Policy update fails if `max_sessions` is outside `1..4`.
+
+
+## Added Month 1/2 operational surfaces
+
+- Operator controls endpoint: `GET/PATCH /v1/operator/settings`.
+- Pairing PIN endpoint: `POST /v1/pairing/pin`.
+- Signed profile endpoints: `POST /v1/config-profiles/sign` and `POST /v1/config-profiles/verify`.
+- Per-protocol enablement: `PATCH /v1/protocols/{id}`.

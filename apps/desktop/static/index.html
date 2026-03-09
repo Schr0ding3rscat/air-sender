@@ -118,10 +118,25 @@
           <select id="maxSessions">
             <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option>
           </select>
+          <select id="queuePolicy"><option value="first-in">first-in</option><option value="teacher-priority">teacher-priority</option><option value="admin-override">admin-override</option></select>
+          <input id="audioOutput" placeholder="audio output" value="default-speaker" />
+          <input id="targetDisplay" placeholder="target display" value="display-1" />
+          <select id="scalingMode"><option value="fit">fit</option><option value="fill">fill</option><option value="actual-size">actual-size</option></select>
+          <select id="rotation"><option value="0">0</option><option value="90">90</option><option value="180">180</option><option value="270">270</option></select>
           <button class="btn" id="savePolicy">Save policy</button>
+
+          <h3>Operator</h3>
+          <input id="deviceNamePolicy" placeholder="Receiver name" value="Air Sender Receiver" />
+          <select id="pinPolicy"><option value="always">always</option><option value="first-pair-only">first-pair-only</option><option value="disabled">disabled</option></select>
+          <select id="networkVisibility"><option value="lan">lan</option><option value="private-only">private-only</option><option value="hidden">hidden</option></select>
+          <button class="btn" id="saveOperator">Save operator settings</button>
+          <button class="btn" id="genPin">Generate on-screen PIN</button>
+          <div id="pinStatus" class="status"></div>
         </article>
 
         <article class="card panel-bottom-left stack">
+          <h3>Protocols</h3>
+          <table><thead><tr><th>Protocol</th><th>Enabled</th><th></th></tr></thead><tbody id="protocolsBody"></tbody></table>
           <h3>Trusted devices</h3>
           <div style="display:flex; gap:8px;">
             <input id="trustDeviceId" placeholder="device-id" />
@@ -144,12 +159,14 @@
       const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
 
       async function load() {
-        const [dashboard, sessions, policy, trust, audit] = await Promise.all([
+        const [dashboard, sessions, policy, trust, audit, protocols, operator] = await Promise.all([
           window.receiverApi.getDashboard(),
           window.receiverApi.getSessions(),
           window.receiverApi.getPolicy(),
           window.receiverApi.getTrustedDevices(),
-          window.receiverApi.getAudit()
+          window.receiverApi.getAudit(),
+          window.receiverApi.getProtocols(),
+          window.receiverApi.getOperatorSettings()
         ]);
 
         const kpis = [
@@ -164,6 +181,15 @@
 
         document.getElementById('acceptancePolicy').value = policy.acceptance;
         document.getElementById('maxSessions').value = String(policy.max_sessions);
+        document.getElementById('queuePolicy').value = policy.queue_policy;
+        document.getElementById('audioOutput').value = policy.audio_output_device;
+        document.getElementById('targetDisplay').value = policy.display.target_display;
+        document.getElementById('scalingMode').value = policy.display.scaling_mode;
+        document.getElementById('rotation').value = String(policy.display.rotation_degrees);
+
+        document.getElementById('deviceNamePolicy').value = operator.device_name;
+        document.getElementById('pinPolicy').value = operator.pin_policy;
+        document.getElementById('networkVisibility').value = operator.network_visibility;
 
         document.getElementById('sessionsBody').innerHTML = sessions.map((s) => {
           const cls = s.status === 'active' ? 'active' : s.status === 'pending' ? 'pending' : 'stopped';
@@ -183,6 +209,7 @@
           </tr>`;
         }).join('');
 
+        document.getElementById('protocolsBody').innerHTML = protocols.map((p) => `<tr><td>${p.id}</td><td>${p.enabled}</td><td><button class=\"btn\" onclick=\"toggleProtocol('${p.id}', ${!p.enabled})\">${p.enabled ? 'Disable' : 'Enable'}</button></td></tr>`).join('');
         document.getElementById('trustBody').innerHTML = trust.map((id) => `<tr><td>${id}</td><td><button class="btn" onclick="revoke('${id}')">Revoke</button></td></tr>`).join('');
         document.getElementById('audit').innerHTML = audit.slice().reverse().map((a) => `${a.ts} | ${a.kind} | ${a.message}`).join('<br/>');
       }
@@ -203,6 +230,7 @@
       window.startRec = (id) => run(() => window.receiverApi.startRecording({ session_id: id, profile: { destination_path: './recordings', quality_preset: 'balanced', codec: 'h264', container: 'mp4' }}), 'Start recording');
       window.stopRec = (id) => run(() => window.receiverApi.stopRecording(id), 'Stop recording');
       window.revoke = (id) => run(() => window.receiverApi.revokeDevice(id), 'Revoke device');
+      window.toggleProtocol = (id, enabled) => run(() => window.receiverApi.updateProtocol(id, enabled), 'Toggle protocol');
 
       document.getElementById('refreshAll').addEventListener('click', () => run(() => Promise.resolve(), 'Refresh'));
       document.getElementById('createSession').addEventListener('click', () => run(() => window.receiverApi.createSession({
@@ -212,9 +240,31 @@
       }), 'Create session'));
       document.getElementById('savePolicy').addEventListener('click', () => run(() => window.receiverApi.updatePolicy({
         acceptance: document.getElementById('acceptancePolicy').value,
-        max_sessions: Number(document.getElementById('maxSessions').value)
+        max_sessions: Number(document.getElementById('maxSessions').value),
+        queue_policy: document.getElementById('queuePolicy').value,
+        audio_output_device: document.getElementById('audioOutput').value,
+        target_display: document.getElementById('targetDisplay').value,
+        scaling_mode: document.getElementById('scalingMode').value,
+        rotation_degrees: Number(document.getElementById('rotation').value)
       }), 'Update policy'));
+      document.getElementById('saveOperator').addEventListener('click', () => run(() => window.receiverApi.updateOperatorSettings({
+        device_name: document.getElementById('deviceNamePolicy').value,
+        pin_policy: document.getElementById('pinPolicy').value,
+        network_visibility: document.getElementById('networkVisibility').value
+      }), 'Update operator settings'));
+      document.getElementById('genPin').addEventListener('click', () => run(async () => {
+        const pin = await window.receiverApi.generatePairingPin();
+        document.getElementById('pinStatus').textContent = `PIN ${pin.pin} (expires ${pin.expires_at})`;
+      }, 'Generate PIN'));
+      
       document.getElementById('trustBtn').addEventListener('click', () => run(() => window.receiverApi.trustDevice(document.getElementById('trustDeviceId').value), 'Trust device'));
+      run(async () => {
+        const policy = await window.receiverApi.getPolicy();
+        const operator = await window.receiverApi.getOperatorSettings();
+        const signed = await window.receiverApi.signConfigProfile({ name: 'desktop-snapshot', policy, operator });
+        const verified = await window.receiverApi.verifyConfigProfile(signed);
+        if (!verified.valid) throw new Error('signed profile verification failed');
+      }, 'Config profile sign+verify smoke');
 
       load().catch((e) => setStatus(`Failed to connect: ${e.message}`));
     </script>

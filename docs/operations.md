@@ -65,3 +65,11 @@ Operational implication:
 
 - Treat current state as ephemeral.
 - Do not rely on restart durability until persistent storage is introduced.
+
+
+## Added Month 1/2 operational surfaces
+
+- Operator controls endpoint: `GET/PATCH /v1/operator/settings`.
+- Pairing PIN endpoint: `POST /v1/pairing/pin`.
+- Signed profile endpoints: `POST /v1/config-profiles/sign` and `POST /v1/config-profiles/verify`.
+- Per-protocol enablement: `PATCH /v1/protocols/{id}`.
