@@ -107,7 +107,7 @@ fi
 
 echo "Running full local API feature test against $BASE_URL"
 
-for endpoint in /v1/dashboard /v1/protocols /v1/policy /v1/sessions /v1/recordings /v1/trust /v1/audit /v1/operator/settings; do
+for endpoint in /v1/dashboard /v1/protocols /v1/policy /v1/performance/report /v1/sessions /v1/recordings /v1/trust /v1/audit /v1/audit/export /v1/diagnostics/bundle /v1/operator/settings; do
   output="$(request GET "$endpoint" no)"
   expect_status "GET $endpoint" 200 "$output"
 done
@@ -124,6 +124,11 @@ DEVICE_ID="$(json_get "$session_body" 'device.id')"
 
 a_output="$(request POST "/v1/sessions/$SESSION_ID/accept" yes)"
 expect_status "accept session" 200 "$a_output"
+
+
+reconnect_payload='{"jitter_ms":120,"dropped":true}'
+output="$(request POST "/v1/sessions/$SESSION_ID/reconnect" yes "$reconnect_payload")"
+expect_status "reconnect active session" 200 "$output"
 
 recording_payload="{\"session_id\":\"$SESSION_ID\",\"profile\":{\"destination_path\":\"/tmp/local-test.mp4\",\"quality_preset\":\"balanced\",\"codec\":\"h264\",\"container\":\"mp4\"}}"
 output="$(request POST "/v1/recordings/start" yes "$recording_payload")"
