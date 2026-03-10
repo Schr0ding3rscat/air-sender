@@ -182,7 +182,7 @@
       </section>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script src="./vendor/qrcode.js"></script>
     <script type="module">
       const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
 
@@ -242,10 +242,14 @@
           pin: effectivePin
         });
         document.getElementById('connectQrPayload').textContent = qrPayload;
-        const qr = qrcode(0, 'L');
-        qr.addData(qrPayload);
-        qr.make();
-        document.getElementById('connectQr').innerHTML = qr.createImgTag(5, 6);
+        if (typeof qrcode === 'function') {
+          const qr = qrcode(0, 'L');
+          qr.addData(qrPayload);
+          qr.make();
+          document.getElementById('connectQr').innerHTML = qr.createImgTag(5, 6);
+        } else {
+          document.getElementById('connectQr').textContent = 'QR library unavailable';
+        }
 
         document.getElementById('sessionsBody').innerHTML = sessions.map((s) => {
           const cls = s.status === 'active' ? 'active' : s.status === 'pending' ? 'pending' : 'stopped';

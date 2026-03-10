@@ -2,7 +2,7 @@ pub mod contracts;
 
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
 };
 
@@ -370,6 +370,7 @@ pub struct ApiError {
 #[derive(Debug, Clone)]
 pub struct AppState {
     api_token: String,
+    bind_addr: SocketAddr,
     protocols: Arc<RwLock<Vec<ProtocolDescriptor>>>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionDescriptor>>>,
     trusted_devices: Arc<RwLock<HashSet<String>>>,
@@ -385,6 +386,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn bootstrap(api_token: String) -> Self {
+        Self::bootstrap_with_bind(
+            api_token,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9760),
+        )
+    }
+
+    pub fn bootstrap_with_bind(api_token: String, bind_addr: SocketAddr) -> Self {
         let protocols = vec![
             ProtocolDescriptor {
                 id: "airplay".to_string(),
@@ -442,6 +450,7 @@ impl AppState {
 
         Self {
             api_token: api_token.clone(),
+            bind_addr,
             protocols: Arc::new(RwLock::new(protocols)),
             sessions: Arc::new(RwLock::new(sessions)),
             trusted_devices: Arc::new(RwLock::new(HashSet::new())),
@@ -505,6 +514,23 @@ impl AppState {
                 error: "unauthorized".into(),
             }),
         )
+    }
+
+    fn local_api_base_url(&self) -> String {
+        let host = match self.bind_addr.ip() {
+            IpAddr::V4(ipv4) if ipv4.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+            IpAddr::V4(ipv4) => ipv4.to_string(),
+            IpAddr::V6(ipv6) if ipv6.is_unspecified() => Ipv6Addr::LOCALHOST.to_string(),
+            IpAddr::V6(ipv6) => ipv6.to_string(),
+        };
+
+        let formatted_host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host
+        };
+
+        format!("http://{formatted_host}:{}", self.bind_addr.port())
     }
 }
 
@@ -1041,7 +1067,7 @@ async fn get_connect_instructions(
 
     Json(ConnectInstructionsResponse {
         receiver_name: operator_settings.device_name,
-        local_url: "http://127.0.0.1:9760/connect".to_string(),
+        local_url: format!("{}/v1/connect/instructions", state.local_api_base_url()),
         pairing_pin,
         protocol_hints: vec![
             ProtocolInstruction {
@@ -1451,7 +1477,7 @@ async fn verify_config_profile(
 }
 
 pub async fn serve(addr: SocketAddr, api_token: String) {
-    let state = AppState::bootstrap(api_token);
+    let state = AppState::bootstrap_with_bind(api_token, addr);
     let app = app(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -1940,8 +1966,34 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let payload: ConnectInstructionsResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload.receiver_name, "Air Sender Receiver");
-        assert!(payload.local_url.contains("127.0.0.1"));
+        assert_eq!(
+            payload.local_url,
+            "http://127.0.0.1:9760/v1/connect/instructions"
+        );
         assert_eq!(payload.protocol_hints.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn connect_instructions_use_configured_bind_address() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)), 9988);
+        let app = app(AppState::bootstrap_with_bind("token".into(), bind));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/connect/instructions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: ConnectInstructionsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload.local_url,
+            "http://10.0.0.8:9988/v1/connect/instructions"
+        );
     }
 
     #[tokio::test]
