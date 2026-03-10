@@ -77,6 +77,14 @@
       #previewCanvas { width:100%; min-height:188px; display:flex; align-items:center; justify-content:center; color:var(--muted); }
       .preview-meta { margin-top:10px; color:var(--muted); font-size:13px; }
       .live { color: var(--ok); }
+      .transport-grid { margin-top: 12px; display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:10px; }
+      .transport-card { border:1px solid #22314f; border-radius:10px; padding:10px; background:#081022; }
+      .transport-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+      .transport-meta { color:var(--muted); font-size:12px; }
+      .transport-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .transport-actions .btn { padding:6px 10px; }
+      .transport-actions input[type="range"] { width: 150px; margin-top:0; }
+      .transport-label { font-size: 12px; color: var(--muted); }
     </style>
   </head>
   <body>
@@ -110,6 +118,7 @@
             <thead><tr><th>Device</th><th>Platform</th><th>Protocol</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="sessionsBody"></tbody>
           </table>
+          <div class="transport-grid" id="sessionTransports"></div>
         </article>
 
         <article class="card panel-controls stack">
@@ -184,6 +193,21 @@
           window.receiverApi.getPreviewState()
         ]);
 
+        const mediaCapableProtocols = new Set(['cast']);
+        const mediaPairs = await Promise.all(
+          sessions
+            .filter((session) => mediaCapableProtocols.has(session.protocol))
+            .map(async (session) => {
+              try {
+                const media = await window.receiverApi.getSessionMedia(session.id);
+                return { session, media };
+              } catch (_e) {
+                return null;
+              }
+            })
+        );
+        const activeMediaSessions = mediaPairs.filter(Boolean);
+
         const kpis = [
           ['Protocols', dashboard.protocol_count],
           ['Pending', dashboard.pending_sessions],
@@ -241,6 +265,23 @@
           </tr>`;
         }).join('');
 
+        document.getElementById('sessionTransports').innerHTML = activeMediaSessions.length
+          ? activeMediaSessions.map(({ session, media }) => `<div class="transport-card">
+              <div class="transport-head">
+                <strong>${session.device.name}</strong>
+                <span class="transport-meta">${session.protocol} • ${media.playback_state}</span>
+              </div>
+              <div class="transport-actions">
+                <button class="btn" onclick="playMedia('${session.id}')">Play</button>
+                <button class="btn" onclick="pauseMedia('${session.id}')">Pause</button>
+                <label class="transport-label">Seek</label>
+                <input type="range" min="0" max="${Math.max(1, Math.floor(media.duration_seconds || 1))}" value="${Math.floor(media.position_seconds || 0)}" onchange="seekMedia('${session.id}', this.value)" />
+                <label class="transport-label">Vol</label>
+                <input type="range" min="0" max="1" step="0.01" value="${media.volume_level}" onchange="volumeMedia('${session.id}', this.value)" />
+              </div>
+            </div>`).join('')
+          : '<div class="transport-meta">No active media transport sessions.</div>';
+
         document.getElementById('protocolsBody').innerHTML = protocols.map((p) => `<tr><td>${p.id}</td><td>${p.enabled}</td><td><button class=\"btn\" onclick=\"toggleProtocol('${p.id}', ${!p.enabled})\">${p.enabled ? 'Disable' : 'Enable'}</button></td></tr>`).join('');
         document.getElementById('trustBody').innerHTML = trust.map((id) => `<tr><td>${id}</td><td><button class="btn" onclick="revoke('${id}')">Revoke</button></td></tr>`).join('');
         document.getElementById('audit').innerHTML = audit.slice().reverse().map((a) => `${a.ts} | ${a.kind} | ${a.message}`).join('<br/>');
@@ -263,6 +304,10 @@
       window.stopRec = (id) => run(() => window.receiverApi.stopRecording(id), 'Stop recording');
       window.revoke = (id) => run(() => window.receiverApi.revokeDevice(id), 'Revoke device');
       window.toggleProtocol = (id, enabled) => run(() => window.receiverApi.updateProtocol(id, enabled), 'Toggle protocol');
+      window.playMedia = (id) => run(() => window.receiverApi.playSessionMedia(id), 'Play media');
+      window.pauseMedia = (id) => run(() => window.receiverApi.pauseSessionMedia(id), 'Pause media');
+      window.seekMedia = (id, position) => run(() => window.receiverApi.seekSessionMedia(id, Number(position)), 'Seek media');
+      window.volumeMedia = (id, volume) => run(() => window.receiverApi.setSessionVolume(id, Number(volume)), 'Update volume');
 
       document.getElementById('refreshAll').addEventListener('click', () => run(() => Promise.resolve(), 'Refresh'));
       document.getElementById('createSession').addEventListener('click', () => run(() => window.receiverApi.createSession({

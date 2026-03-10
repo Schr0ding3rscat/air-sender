@@ -99,6 +99,24 @@ pub struct RecordingState {
     pub started_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaTransportState {
+    pub session_id: Uuid,
+    pub playback_state: PlaybackState,
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+    pub volume_level: f32,
+    pub muted: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditEvent {
     pub id: Uuid,
@@ -290,6 +308,17 @@ pub struct SessionReconnectRequest {
     pub dropped: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct SeekRequest {
+    pub position_seconds: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VolumeRequest {
+    pub volume_level: f32,
+    pub muted: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionReconnectResponse {
     pub session_id: Uuid,
@@ -377,6 +406,7 @@ pub struct AppState {
     signing_secret: Arc<Vec<u8>>,
     reconnect_attempts: Arc<RwLock<HashMap<Uuid, u8>>>,
     reliability: Arc<RwLock<ReliabilityPolicy>>,
+    media_transports: Arc<RwLock<HashMap<Uuid, MediaTransportState>>>,
 }
 
 impl AppState {
@@ -467,6 +497,7 @@ impl AppState {
                 reconnect_grace_ms: 4_000,
                 max_reconnect_attempts: 5,
             })),
+            media_transports: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -503,6 +534,24 @@ impl AppState {
     }
 }
 
+fn protocol_supports_media_transport(protocol: &ProtocolKind) -> bool {
+    matches!(protocol, ProtocolKind::Cast)
+}
+
+impl MediaTransportState {
+    fn seeded_for_session(session_id: Uuid) -> Self {
+        Self {
+            session_id,
+            playback_state: PlaybackState::Paused,
+            position_seconds: 0.0,
+            duration_seconds: 3_600.0,
+            volume_level: 0.8,
+            muted: false,
+            updated_at: Utc::now(),
+        }
+    }
+}
+
 fn profile_signature(secret: &[u8], profile: &SignedConfigProfile) -> String {
     let payload = serde_json::to_vec(profile).expect("serialize profile for signing");
     let mut hash = 0xcbf29ce484222325u64;
@@ -523,6 +572,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/:id/accept", post(accept_session))
         .route("/v1/sessions/:id/stop", post(stop_session))
         .route("/v1/sessions/:id/reconnect", post(reconnect_session))
+        .route("/v1/sessions/:id/media", get(get_media_transport))
+        .route("/v1/sessions/:id/media/play", post(play_media))
+        .route("/v1/sessions/:id/media/pause", post(pause_media))
+        .route("/v1/sessions/:id/media/seek", post(seek_media))
+        .route("/v1/sessions/:id/media/volume", post(set_media_volume))
         .route("/v1/recordings", get(get_recordings))
         .route("/v1/recordings/start", post(start_recording))
         .route("/v1/recordings/stop", post(stop_recording))
@@ -747,6 +801,17 @@ async fn create_mock_session(
         .write()
         .await
         .insert(descriptor.id, descriptor.clone());
+
+    if descriptor.status == SessionStatus::Active
+        && protocol_supports_media_transport(&descriptor.protocol)
+    {
+        state
+            .media_transports
+            .write()
+            .await
+            .entry(descriptor.id)
+            .or_insert_with(|| MediaTransportState::seeded_for_session(descriptor.id));
+    }
     state
         .audit(
             "session.created",
@@ -831,6 +896,7 @@ async fn accept_session(
             if let Some(active_session) = sessions.get_mut(&handoff_id) {
                 active_session.status = SessionStatus::Stopped;
                 state.recordings.write().await.remove(&handoff_id);
+                state.media_transports.write().await.remove(&handoff_id);
                 state
                     .audit(
                         "session.handoff",
@@ -845,6 +911,14 @@ async fn accept_session(
         .get_mut(&id)
         .expect("session existence validated above");
     session.status = SessionStatus::Active;
+    if protocol_supports_media_transport(&session.protocol) {
+        state
+            .media_transports
+            .write()
+            .await
+            .entry(id)
+            .or_insert_with(|| MediaTransportState::seeded_for_session(id));
+    }
     state
         .audit("session.accepted", format!("session {} accepted", id))
         .await;
@@ -868,6 +942,7 @@ async fn stop_session(
         Some(session) => {
             session.status = SessionStatus::Stopped;
             state.recordings.write().await.remove(&id);
+            state.media_transports.write().await.remove(&id);
             state
                 .audit("session.stopped", format!("session {} stopped", id))
                 .await;
@@ -952,6 +1027,188 @@ async fn reconnect_session(
         }),
     )
         .into_response()
+}
+
+async fn get_media_transport(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let sessions = state.sessions.read().await;
+    let Some(session) = sessions.get(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "session not found".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    if !protocol_supports_media_transport(&session.protocol) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "protocol does not support media transport".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    if session.status != SessionStatus::Active {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "session must be active for media transport".into(),
+            }),
+        )
+            .into_response();
+    }
+    drop(sessions);
+
+    let mut transports = state.media_transports.write().await;
+    let state = transports
+        .entry(id)
+        .or_insert_with(|| MediaTransportState::seeded_for_session(id))
+        .clone();
+
+    (StatusCode::OK, Json(state)).into_response()
+}
+
+async fn play_media(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized play_media")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let transport = update_media_transport(&state, id, |media| {
+        media.playback_state = PlaybackState::Playing;
+    })
+    .await;
+
+    media_response(transport)
+}
+
+async fn pause_media(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized pause_media")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let transport = update_media_transport(&state, id, |media| {
+        media.playback_state = PlaybackState::Paused;
+    })
+    .await;
+
+    media_response(transport)
+}
+
+async fn seek_media(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<SeekRequest>,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized seek_media")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let transport = update_media_transport(&state, id, |media| {
+        media.position_seconds = payload.position_seconds.clamp(0.0, media.duration_seconds);
+    })
+    .await;
+
+    media_response(transport)
+}
+
+async fn set_media_volume(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<VolumeRequest>,
+) -> impl IntoResponse {
+    if state.authorize(&headers).is_err() {
+        state
+            .audit("security.denied", "unauthorized set_media_volume")
+            .await;
+        return AppState::unauthorized().into_response();
+    }
+
+    let transport = update_media_transport(&state, id, |media| {
+        media.volume_level = payload.volume_level.clamp(0.0, 1.0);
+        if let Some(muted) = payload.muted {
+            media.muted = muted;
+        }
+    })
+    .await;
+
+    media_response(transport)
+}
+
+fn media_response(
+    transport: Result<MediaTransportState, (StatusCode, Json<ApiError>)>,
+) -> axum::response::Response {
+    match transport {
+        Ok(state) => (StatusCode::OK, Json(state)).into_response(),
+        Err((status, error)) => (status, error).into_response(),
+    }
+}
+
+async fn update_media_transport(
+    state: &AppState,
+    id: Uuid,
+    mutate: impl FnOnce(&mut MediaTransportState),
+) -> Result<MediaTransportState, (StatusCode, Json<ApiError>)> {
+    let sessions = state.sessions.read().await;
+    let Some(session) = sessions.get(&id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "session not found".into(),
+            }),
+        ));
+    };
+
+    if !protocol_supports_media_transport(&session.protocol) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "protocol does not support media transport".into(),
+            }),
+        ));
+    }
+
+    if session.status != SessionStatus::Active {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "session must be active for media transport".into(),
+            }),
+        ));
+    }
+    drop(sessions);
+
+    let mut transports = state.media_transports.write().await;
+    let entry = transports
+        .entry(id)
+        .or_insert_with(|| MediaTransportState::seeded_for_session(id));
+    mutate(entry);
+    entry.updated_at = Utc::now();
+    Ok(entry.clone())
 }
 
 async fn get_recordings(State(state): State<AppState>) -> Json<Vec<RecordingState>> {
@@ -1996,5 +2253,175 @@ mod tests {
         let sessions: Vec<SessionDescriptor> = serde_json::from_slice(&body).unwrap();
         let seeded = sessions.into_iter().find(|s| s.id == seeded_id).unwrap();
         assert_eq!(seeded.status, SessionStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn media_transport_endpoints_require_active_cast_session() {
+        let app = app(AppState::bootstrap("token".into()));
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"protocol":"cast","device_name":"TV","device_platform":"Android TV"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let body = create_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let created: SessionDescriptor = serde_json::from_slice(&body).unwrap();
+
+        let inactive_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/v1/sessions/{}/media", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(inactive_response.status(), StatusCode::CONFLICT);
+
+        let _accepted = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{}/accept", created.id))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let media_response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/v1/sessions/{}/media", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(media_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn media_transport_controls_update_state() {
+        let app = app(AppState::bootstrap("token".into()));
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"protocol":"cast","device_name":"TV","device_platform":"Android TV"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = create_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let created: SessionDescriptor = serde_json::from_slice(&body).unwrap();
+
+        let _accepted = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{}/accept", created.id))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let _played = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{}/media/play", created.id))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let _seeked = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{}/media/seek", created.id))
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"position_seconds":123.4}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let _volume = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{}/media/volume", created.id))
+                    .header("authorization", "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"volume_level":0.33,"muted":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let media_response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/v1/sessions/{}/media", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(media_response.status(), StatusCode::OK);
+        let body = media_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let media: MediaTransportState = serde_json::from_slice(&body).unwrap();
+        assert_eq!(media.playback_state, PlaybackState::Playing);
+        assert_eq!(media.muted, true);
+        assert!((media.position_seconds - 123.4).abs() < 0.01);
+        assert!((media.volume_level - 0.33).abs() < 0.01);
     }
 }

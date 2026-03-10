@@ -45,5 +45,10 @@ contextBridge.exposeInMainWorld('receiverApi', {
   signConfigProfile: (payload) => request('POST', '/v1/config-profiles/sign', payload),
   verifyConfigProfile: (payload) => request('POST', '/v1/config-profiles/verify', payload),
   getAudit: () => request('GET', '/v1/audit'),
+  getSessionMedia: (id) => request('GET', `/v1/sessions/${id}/media`),
+  playSessionMedia: (id) => request('POST', `/v1/sessions/${id}/media/play`),
+  pauseSessionMedia: (id) => request('POST', `/v1/sessions/${id}/media/pause`),
+  seekSessionMedia: (id, position_seconds) => request('POST', `/v1/sessions/${id}/media/seek`, { position_seconds }),
+  setSessionVolume: (id, volume_level, muted) => request('POST', `/v1/sessions/${id}/media/volume`, { volume_level, muted }),
   getPreviewState: () => request('GET', '/v1/preview/state')
 });
