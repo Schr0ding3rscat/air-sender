@@ -49,6 +49,7 @@
       .kpi { background:#0f172a; border:1px solid #22314f; border-radius:12px; padding:10px; }
       .kpi small { color:var(--muted); display:block; }
       .kpi strong { font-size:22px; }
+      .panel-preview { grid-column: span 8; }
       .panel-sessions { grid-column: span 8; }
       .panel-controls { grid-column: span 4; }
       .panel-bottom-left { grid-column: span 6; }
@@ -72,6 +73,10 @@
       .stack > * + * { margin-top:8px; }
       .log { max-height:260px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
       .status { color:var(--muted); margin-left:10px; }
+      .preview-shell { margin-top:8px; border:1px solid #22314f; border-radius:12px; background:#081022; min-height:190px; display:flex; align-items:center; justify-content:center; }
+      #previewCanvas { width:100%; min-height:188px; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+      .preview-meta { margin-top:10px; color:var(--muted); font-size:13px; }
+      .live { color: var(--ok); }
     </style>
   </head>
   <body>
@@ -89,6 +94,15 @@
 
       <section class="grid">
         <div class="kpis" id="kpis"></div>
+
+
+        <article class="card panel-preview">
+          <h3>Preview</h3>
+          <div class="preview-shell">
+            <div id="previewCanvas">No active stream</div>
+          </div>
+          <div class="preview-meta" id="previewMeta">State: no-active-stream</div>
+        </article>
 
         <article class="card panel-sessions">
           <h3>Sessions</h3>
@@ -159,14 +173,15 @@
       const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
 
       async function load() {
-        const [dashboard, sessions, policy, trust, audit, protocols, operator] = await Promise.all([
+        const [dashboard, sessions, policy, trust, audit, protocols, operator, preview] = await Promise.all([
           window.receiverApi.getDashboard(),
           window.receiverApi.getSessions(),
           window.receiverApi.getPolicy(),
           window.receiverApi.getTrustedDevices(),
           window.receiverApi.getAudit(),
           window.receiverApi.getProtocols(),
-          window.receiverApi.getOperatorSettings()
+          window.receiverApi.getOperatorSettings(),
+          window.receiverApi.getPreviewState()
         ]);
 
         const kpis = [
@@ -190,6 +205,23 @@
         document.getElementById('deviceNamePolicy').value = operator.device_name;
         document.getElementById('pinPolicy').value = operator.pin_policy;
         document.getElementById('networkVisibility').value = operator.network_visibility;
+
+        const previewCanvas = document.getElementById('previewCanvas');
+        const previewMeta = document.getElementById('previewMeta');
+        const stateText = preview.stream_state.replaceAll('-', ' ');
+        if (preview.stream_state === 'live') {
+          previewCanvas.innerHTML = '<div class="live">Live preview available</div>';
+        } else if (preview.stream_state === 'connecting') {
+          previewCanvas.textContent = 'Connecting';
+        } else {
+          previewCanvas.textContent = 'No active stream';
+        }
+
+        const mediaMeta = [];
+        if (preview.resolution) mediaMeta.push(`Resolution: ${preview.resolution}`);
+        if (preview.fps_target) mediaMeta.push(`FPS target: ${preview.fps_target}`);
+        if (preview.device_name) mediaMeta.push(`Device: ${preview.device_name}`);
+        previewMeta.textContent = `State: ${stateText}${mediaMeta.length ? ` | ${mediaMeta.join(' | ')}` : ''}`;
 
         document.getElementById('sessionsBody').innerHTML = sessions.map((s) => {
           const cls = s.status === 'active' ? 'active' : s.status === 'pending' ? 'pending' : 'stopped';

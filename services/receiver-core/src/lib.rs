@@ -331,6 +331,24 @@ pub struct DiagnosticsBundle {
     pub protocol_status: Vec<ProtocolDescriptor>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewStreamState {
+    NoActiveStream,
+    Connecting,
+    Live,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewStateResponse {
+    pub stream_state: PreviewStreamState,
+    pub resolution: Option<String>,
+    pub fps_target: Option<u16>,
+    pub session_id: Option<Uuid>,
+    pub protocol: Option<ProtocolKind>,
+    pub device_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DashboardSummary {
     pub protocol_count: usize,
@@ -521,6 +539,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/audit", get(get_audit))
         .route("/v1/audit/export", get(export_audit))
         .route("/v1/policy", get(get_policy).patch(update_policy))
+        .route("/v1/preview/state", get(get_preview_state))
         .route("/v1/performance/report", get(get_performance_report))
         .route("/v1/diagnostics/bundle", get(get_diagnostics_bundle))
         .route("/v1/config-profiles/sign", post(sign_config_profile))
@@ -602,6 +621,50 @@ async fn update_protocol(
 async fn get_sessions(State(state): State<AppState>) -> Json<Vec<SessionDescriptor>> {
     let sessions = state.sessions.read().await;
     Json(sessions.values().cloned().collect())
+}
+
+async fn get_preview_state(State(state): State<AppState>) -> Json<PreviewStateResponse> {
+    let sessions = state.sessions.read().await;
+    let protocols = state.protocols.read().await;
+
+    let active = sessions
+        .values()
+        .find(|session| session.status == SessionStatus::Active)
+        .cloned();
+    let pending = sessions
+        .values()
+        .find(|session| {
+            matches!(
+                session.status,
+                SessionStatus::Pending | SessionStatus::Queued
+            )
+        })
+        .cloned();
+
+    let (stream_state, current_session) = if let Some(session) = active {
+        (PreviewStreamState::Live, Some(session))
+    } else if let Some(session) = pending {
+        (PreviewStreamState::Connecting, Some(session))
+    } else {
+        (PreviewStreamState::NoActiveStream, None)
+    };
+
+    let protocol_meta = current_session.as_ref().and_then(|session| {
+        protocols
+            .iter()
+            .find(|protocol| protocol.kind == session.protocol)
+    });
+
+    Json(PreviewStateResponse {
+        stream_state,
+        resolution: protocol_meta.map(|protocol| protocol.capabilities.max_resolution.clone()),
+        fps_target: protocol_meta.map(|protocol| protocol.capabilities.max_fps),
+        session_id: current_session.as_ref().map(|session| session.id),
+        protocol: current_session
+            .as_ref()
+            .map(|session| session.protocol.clone()),
+        device_name: current_session.map(|session| session.device.name),
+    })
 }
 
 async fn create_mock_session(
@@ -1805,6 +1868,87 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn preview_state_endpoint_tracks_stream_lifecycle() {
+        let app = app(AppState::bootstrap("token".into()));
+        let seeded_id = seeded_session_id(&app).await;
+
+        let connecting = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/preview/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(connecting.status(), StatusCode::OK);
+        let body = connecting.into_body().collect().await.unwrap().to_bytes();
+        let preview: PreviewStateResponse = serde_json::from_slice(&body).unwrap();
+        assert!(matches!(
+            preview.stream_state,
+            PreviewStreamState::Connecting
+        ));
+
+        let _ = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{seeded_id}/accept"))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let live = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/preview/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = live.into_body().collect().await.unwrap().to_bytes();
+        let preview: PreviewStateResponse = serde_json::from_slice(&body).unwrap();
+        assert!(matches!(preview.stream_state, PreviewStreamState::Live));
+
+        let _ = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{seeded_id}/stop"))
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let no_stream = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/preview/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = no_stream.into_body().collect().await.unwrap().to_bytes();
+        let preview: PreviewStateResponse = serde_json::from_slice(&body).unwrap();
+        assert!(matches!(
+            preview.stream_state,
+            PreviewStreamState::NoActiveStream
+        ));
+    }
+
     #[tokio::test]
     async fn accept_missing_session_does_not_stop_existing_active_session() {
         let app = app(AppState::bootstrap("token".into()));
