@@ -46,5 +46,6 @@ contextBridge.exposeInMainWorld('receiverApi', {
   stopRecording: (session_id) => request('POST', '/v1/recordings/stop', { session_id }),
   signConfigProfile: (payload) => request('POST', '/v1/config-profiles/sign', payload),
   verifyConfigProfile: (payload) => request('POST', '/v1/config-profiles/verify', payload),
-  getAudit: () => request('GET', '/v1/audit')
+  getAudit: () => request('GET', '/v1/audit'),
+  getPreviewState: () => request('GET', '/v1/preview/state')
 });
