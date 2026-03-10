@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('receiverApi', {
   updatePolicy: (payload) => request('PATCH', '/v1/policy', payload),
   getOperatorSettings: () => request('GET', '/v1/operator/settings'),
   updateOperatorSettings: (payload) => request('PATCH', '/v1/operator/settings', payload),
+  getConnectInstructions: () => request('GET', '/v1/connect/instructions'),
+  getPairingPin: () => request('GET', '/v1/pairing/pin'),
   generatePairingPin: () => request('POST', '/v1/pairing/pin'),
   getTrustedDevices: () => request('GET', '/v1/trust'),
   trustDevice: (id) => request('POST', `/v1/trust/${id}`),

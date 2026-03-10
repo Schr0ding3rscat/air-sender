@@ -72,6 +72,15 @@
       .stack > * + * { margin-top:8px; }
       .log { max-height:260px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
       .status { color:var(--muted); margin-left:10px; }
+
+      .connect-card { grid-column: span 12; display:grid; grid-template-columns: 1.1fr 1fr; gap:12px; }
+      .connect-meta { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px; }
+      .meta-item { background:#0f172a; border:1px solid #22314f; border-radius:10px; padding:10px; }
+      .meta-item small { display:block; color:var(--muted); }
+      .meta-item code { color:#7dd3fc; font-size:13px; word-break:break-all; }
+      .protocol-list { margin:0; padding-left:18px; }
+      .protocol-list li { margin:6px 0; color:#cbd5e1; }
+      #connectQr { width:200px; height:200px; background:#fff; border-radius:10px; padding:8px; }
     </style>
   </head>
   <body>
@@ -89,6 +98,24 @@
 
       <section class="grid">
         <div class="kpis" id="kpis"></div>
+
+        <article class="card connect-card">
+          <div>
+            <h3>Connect this receiver</h3>
+            <div class="connect-meta">
+              <div class="meta-item"><small>Receiver name</small><strong id="connectReceiverName">-</strong></div>
+              <div class="meta-item"><small>Pairing PIN</small><strong id="connectPinState">-</strong></div>
+              <div class="meta-item" style="grid-column: span 2;"><small>Local URL</small><code id="connectLocalUrl">-</code></div>
+            </div>
+            <h4>Protocol-specific instructions</h4>
+            <ul class="protocol-list" id="connectProtocolHints"></ul>
+          </div>
+          <div>
+            <h4>Scan to connect</h4>
+            <div id="connectQr"></div>
+            <div class="subtitle" id="connectQrPayload"></div>
+          </div>
+        </article>
 
         <article class="card panel-sessions">
           <h3>Sessions</h3>
@@ -155,18 +182,21 @@
       </section>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <script type="module">
       const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
 
       async function load() {
-        const [dashboard, sessions, policy, trust, audit, protocols, operator] = await Promise.all([
+        const [dashboard, sessions, policy, trust, audit, protocols, operator, connectInstructions, pairingPin] = await Promise.all([
           window.receiverApi.getDashboard(),
           window.receiverApi.getSessions(),
           window.receiverApi.getPolicy(),
           window.receiverApi.getTrustedDevices(),
           window.receiverApi.getAudit(),
           window.receiverApi.getProtocols(),
-          window.receiverApi.getOperatorSettings()
+          window.receiverApi.getOperatorSettings(),
+          window.receiverApi.getConnectInstructions(),
+          window.receiverApi.getPairingPin()
         ]);
 
         const kpis = [
@@ -190,6 +220,32 @@
         document.getElementById('deviceNamePolicy').value = operator.device_name;
         document.getElementById('pinPolicy').value = operator.pin_policy;
         document.getElementById('networkVisibility').value = operator.network_visibility;
+
+        const effectivePin = pairingPin.pin ?? connectInstructions.pairing_pin.pin;
+        const effectiveExpiry = pairingPin.expires_at ?? connectInstructions.pairing_pin.expires_at;
+        const pinLabel = !connectInstructions.pairing_pin.enabled
+          ? 'Disabled by policy'
+          : effectivePin
+            ? `PIN ${effectivePin}${effectiveExpiry ? ` (expires ${effectiveExpiry})` : ''}`
+            : 'Not generated';
+
+        document.getElementById('connectReceiverName').textContent = connectInstructions.receiver_name;
+        document.getElementById('connectLocalUrl').textContent = connectInstructions.local_url;
+        document.getElementById('connectPinState').textContent = pinLabel;
+        document.getElementById('connectProtocolHints').innerHTML = connectInstructions.protocol_hints
+          .map((item) => `<li><strong>${item.protocol}:</strong> ${item.hint}</li>`)
+          .join('');
+
+        const qrPayload = JSON.stringify({
+          receiver: connectInstructions.receiver_name,
+          url: connectInstructions.local_url,
+          pin: effectivePin
+        });
+        document.getElementById('connectQrPayload').textContent = qrPayload;
+        const qr = qrcode(0, 'L');
+        qr.addData(qrPayload);
+        qr.make();
+        document.getElementById('connectQr').innerHTML = qr.createImgTag(5, 6);
 
         document.getElementById('sessionsBody').innerHTML = sessions.map((s) => {
           const cls = s.status === 'active' ? 'active' : s.status === 'pending' ? 'pending' : 'stopped';
