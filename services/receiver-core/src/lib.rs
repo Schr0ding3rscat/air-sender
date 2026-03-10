@@ -2,7 +2,7 @@ pub mod contracts;
 
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
 };
 
@@ -175,7 +175,7 @@ pub struct ReliabilityPolicy {
     pub max_reconnect_attempts: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PinPolicy {
     Always,
@@ -209,6 +209,27 @@ pub struct UpdateOperatorSettingsRequest {
 pub struct PairingPinResponse {
     pub pin: String,
     pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingPinState {
+    pub enabled: bool,
+    pub pin: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolInstruction {
+    pub protocol: String,
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectInstructionsResponse {
+    pub receiver_name: String,
+    pub local_url: String,
+    pub pairing_pin: PairingPinState,
+    pub protocol_hints: Vec<ProtocolInstruction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -367,6 +388,7 @@ pub struct ApiError {
 #[derive(Debug, Clone)]
 pub struct AppState {
     api_token: String,
+    bind_addr: SocketAddr,
     protocols: Arc<RwLock<Vec<ProtocolDescriptor>>>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionDescriptor>>>,
     trusted_devices: Arc<RwLock<HashSet<String>>>,
@@ -374,6 +396,7 @@ pub struct AppState {
     audit_log: Arc<RwLock<Vec<AuditEvent>>>,
     policy: Arc<RwLock<ReceiverPolicy>>,
     operator_settings: Arc<RwLock<OperatorSettings>>,
+    pairing_pin: Arc<RwLock<Option<PairingPinResponse>>>,
     signing_secret: Arc<Vec<u8>>,
     reconnect_attempts: Arc<RwLock<HashMap<Uuid, u8>>>,
     reliability: Arc<RwLock<ReliabilityPolicy>>,
@@ -381,6 +404,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn bootstrap(api_token: String) -> Self {
+        Self::bootstrap_with_bind(
+            api_token,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9760),
+        )
+    }
+
+    pub fn bootstrap_with_bind(api_token: String, bind_addr: SocketAddr) -> Self {
         let protocols = vec![
             ProtocolDescriptor {
                 id: "airplay".to_string(),
@@ -438,6 +468,7 @@ impl AppState {
 
         Self {
             api_token: api_token.clone(),
+            bind_addr,
             protocols: Arc::new(RwLock::new(protocols)),
             sessions: Arc::new(RwLock::new(sessions)),
             trusted_devices: Arc::new(RwLock::new(HashSet::new())),
@@ -461,6 +492,7 @@ impl AppState {
                 pin_policy: PinPolicy::Always,
                 network_visibility: NetworkVisibility::Lan,
             })),
+            pairing_pin: Arc::new(RwLock::new(None)),
             signing_secret: Arc::new(format!("{}-config-signing", api_token).into_bytes()),
             reconnect_attempts: Arc::new(RwLock::new(HashMap::new())),
             reliability: Arc::new(RwLock::new(ReliabilityPolicy {
@@ -501,6 +533,23 @@ impl AppState {
             }),
         )
     }
+
+    fn local_api_base_url(&self) -> String {
+        let host = match self.bind_addr.ip() {
+            IpAddr::V4(ipv4) if ipv4.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+            IpAddr::V4(ipv4) => ipv4.to_string(),
+            IpAddr::V6(ipv6) if ipv6.is_unspecified() => Ipv6Addr::LOCALHOST.to_string(),
+            IpAddr::V6(ipv6) => ipv6.to_string(),
+        };
+
+        let formatted_host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host
+        };
+
+        format!("http://{formatted_host}:{}", self.bind_addr.port())
+    }
 }
 
 fn profile_signature(secret: &[u8], profile: &SignedConfigProfile) -> String {
@@ -527,7 +576,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/recordings/start", post(start_recording))
         .route("/v1/recordings/stop", post(stop_recording))
         .route("/v1/trust", get(get_trusted_devices))
-        .route("/v1/pairing/pin", post(generate_pairing_pin))
+        .route(
+            "/v1/pairing/pin",
+            get(get_pairing_pin_state).post(generate_pairing_pin),
+        )
+        .route("/v1/connect/instructions", get(get_connect_instructions))
         .route(
             "/v1/trust/:device_id",
             post(trust_device).delete(revoke_trust),
@@ -1055,6 +1108,47 @@ async fn get_trusted_devices(State(state): State<AppState>) -> Json<Vec<String>>
     Json(state.trusted_devices.read().await.iter().cloned().collect())
 }
 
+async fn get_pairing_pin_state(State(state): State<AppState>) -> Json<PairingPinState> {
+    let settings = state.operator_settings.read().await.clone();
+    let pin = state.pairing_pin.read().await.clone();
+
+    let enabled = settings.pin_policy != PinPolicy::Disabled;
+
+    let active_pin = pin.filter(|candidate| candidate.expires_at > Utc::now());
+    Json(PairingPinState {
+        enabled,
+        pin: active_pin.as_ref().map(|candidate| candidate.pin.clone()),
+        expires_at: active_pin.as_ref().map(|candidate| candidate.expires_at),
+    })
+}
+
+async fn get_connect_instructions(
+    State(state): State<AppState>,
+) -> Json<ConnectInstructionsResponse> {
+    let operator_settings = state.operator_settings.read().await.clone();
+    let pairing_pin = get_pairing_pin_state(State(state.clone())).await.0;
+
+    Json(ConnectInstructionsResponse {
+        receiver_name: operator_settings.device_name,
+        local_url: format!("{}/v1/connect/instructions", state.local_api_base_url()),
+        pairing_pin,
+        protocol_hints: vec![
+            ProtocolInstruction {
+                protocol: "AirPlay".to_string(),
+                hint: "On iPhone, open Control Center, tap Screen Mirroring, then choose this receiver.".to_string(),
+            },
+            ProtocolInstruction {
+                protocol: "Cast".to_string(),
+                hint: "In Chrome or Android apps, tap Cast and pick this receiver name.".to_string(),
+            },
+            ProtocolInstruction {
+                protocol: "Miracast".to_string(),
+                hint: "On Windows, press Win+K and select this receiver from wireless displays.".to_string(),
+            },
+        ],
+    })
+}
+
 async fn generate_pairing_pin(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1071,6 +1165,8 @@ async fn generate_pairing_pin(
         pin,
         expires_at: Utc::now() + chrono::Duration::minutes(5),
     };
+
+    state.pairing_pin.write().await.replace(response.clone());
 
     state
         .audit("pairing.pin.generated", "on-screen pin generated")
@@ -1444,7 +1540,7 @@ async fn verify_config_profile(
 }
 
 pub async fn serve(addr: SocketAddr, api_token: String) {
-    let state = AppState::bootstrap(api_token);
+    let state = AppState::bootstrap_with_bind(api_token, addr);
     let app = app(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -1996,5 +2092,84 @@ mod tests {
         let sessions: Vec<SessionDescriptor> = serde_json::from_slice(&body).unwrap();
         let seeded = sessions.into_iter().find(|s| s.id == seeded_id).unwrap();
         assert_eq!(seeded.status, SessionStatus::Active);
+    }
+    #[tokio::test]
+    async fn connect_instructions_include_operator_name_and_protocol_hints() {
+        let app = app(AppState::bootstrap("token".into()));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/connect/instructions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: ConnectInstructionsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload.receiver_name, "Air Sender Receiver");
+        assert_eq!(
+            payload.local_url,
+            "http://127.0.0.1:9760/v1/connect/instructions"
+        );
+        assert_eq!(payload.protocol_hints.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn connect_instructions_use_configured_bind_address() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)), 9988);
+        let app = app(AppState::bootstrap_with_bind("token".into(), bind));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/connect/instructions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: ConnectInstructionsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload.local_url,
+            "http://10.0.0.8:9988/v1/connect/instructions"
+        );
+    }
+
+    #[tokio::test]
+    async fn pairing_pin_state_returns_generated_pin() {
+        let app = app(AppState::bootstrap("token".into()));
+        let _ = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/pairing/pin")
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/pairing/pin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: PairingPinState = serde_json::from_slice(&body).unwrap();
+        assert!(payload.enabled);
+        assert!(payload.pin.is_some());
     }
 }
